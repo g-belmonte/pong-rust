@@ -9,6 +9,7 @@ pub mod window;
 
 use cgmath::Deg;
 use cgmath::Matrix4;
+use cgmath::Point3;
 use cgmath::SquareMatrix;
 use cgmath::Vector3;
 use constants::*;
@@ -24,19 +25,19 @@ use self::structures::UniformBufferObject;
 
 const VERTICES_DATA: [Vertex; 4] = [
     Vertex {
-        pos: [-0.5, -0.5],
+        pos: [-0.2, -0.5],
         color: [1.0, 0.0, 0.0],
     },
     Vertex {
-        pos: [0.5, -0.5],
+        pos: [0.2, -0.5],
         color: [0.0, 1.0, 0.0],
     },
     Vertex {
-        pos: [0.5, 0.5],
+        pos: [0.2, 0.5],
         color: [0.0, 0.0, 1.0],
     },
     Vertex {
-        pos: [-0.5, 0.5],
+        pos: [-0.2, 0.5],
         color: [1.0, 1.0, 1.0],
     },
 ];
@@ -233,6 +234,18 @@ impl GraphicsManager {
 
             uniform_transform: UniformBufferObject {
                 model: Matrix4::<f32>::identity(),
+                view: Matrix4::look_at(
+                    Point3::new(0.0, 0.0, 4.0),
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vector3::new(0.0, 1.0, 0.0)
+                ),
+                proj: cgmath::perspective(
+                    Deg(45.0),
+                    swapchain_stuff.swapchain_extent.width as f32
+                        / swapchain_stuff.swapchain_extent.height as f32,
+                    0.1,
+                    10.0,
+                ),
             },
             uniform_buffers,
             uniform_buffers_memory,
@@ -358,9 +371,9 @@ impl GraphicsManager {
     }
 
     fn update_uniform_buffer(&mut self, current_image: usize, delta_time: f32) {
-        self.uniform_transform.model =
-            Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
-                * self.uniform_transform.model;
+        // self.uniform_transform.model =
+        //     Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
+        //         * self.uniform_transform.model;
 
         let ubos = [self.uniform_transform];
 
