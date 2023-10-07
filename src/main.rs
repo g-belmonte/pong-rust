@@ -1,8 +1,12 @@
+mod camera;
 mod graphics_manager;
+mod paddle;
+mod scene;
 
 use crate::graphics_manager::GraphicsManager;
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
 
+use scene::Scene;
 use winit::event::{Event, VirtualKeyCode, ElementState, KeyboardInput, WindowEvent};
 use winit::event_loop::{EventLoop, ControlFlow};
 
@@ -65,7 +69,8 @@ impl PongRust {
 
 fn main() {
     let event_loop = EventLoop::new();
-    let graphics_manager = GraphicsManager::new(&event_loop);
+    let scene = Scene::new();
+    let graphics_manager = GraphicsManager::new(&event_loop, scene);
     let pong_rust = PongRust {
         graphics_manager,
     };

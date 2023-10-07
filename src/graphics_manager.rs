@@ -7,13 +7,10 @@ pub mod structures;
 pub mod tools;
 pub mod window;
 
+
 use cgmath::Deg;
-use cgmath::Matrix4;
-use cgmath::Point3;
-use cgmath::SquareMatrix;
-use cgmath::Vector3;
 use constants::*;
-use structures::{QueueFamilyIndices, SurfaceStuff, Vertex};
+use structures::{QueueFamilyIndices, SurfaceStuff};
 
 use ash::version::DeviceV1_0;
 use ash::version::InstanceV1_0;
@@ -21,27 +18,9 @@ use ash::vk;
 
 use std::ptr;
 
-use self::structures::UniformBufferObject;
+use crate::scene::Scene;
 
-const VERTICES_DATA: [Vertex; 4] = [
-    Vertex {
-        pos: [-0.2, -0.5],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        pos: [0.2, -0.5],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        pos: [0.2, 0.5],
-        color: [0.0, 0.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.2, 0.5],
-        color: [1.0, 1.0, 1.0],
-    },
-];
-const INDICES_DATA: [u32; 6] = [0, 1, 2, 2, 3, 0];
+use self::structures::UniformBufferObject;
 
 pub struct GraphicsManager {
     window: winit::window::Window,
@@ -73,6 +52,8 @@ pub struct GraphicsManager {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
 
+    index_data: [u32; 6],
+
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
@@ -97,7 +78,7 @@ pub struct GraphicsManager {
 }
 
 impl GraphicsManager {
-    pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> GraphicsManager {
+    pub fn new(event_loop: &winit::event_loop::EventLoop<()>, scene: Scene) -> GraphicsManager {
         let window = window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = ash::Entry::new().unwrap();
@@ -154,19 +135,22 @@ impl GraphicsManager {
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
+
+        let vertex_data = scene.left_paddle.vertices;
+        let index_data = scene.left_paddle.indices;
         let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
             &device,
             &physical_device_memory_properties,
             command_pool,
             graphics_queue,
-            &VERTICES_DATA,
+            &vertex_data,
         );
         let (index_buffer, index_buffer_memory) = share::create_index_buffer(
             &device,
             &physical_device_memory_properties,
             command_pool,
             graphics_queue,
-            &INDICES_DATA,
+            &index_data,
         );
         let (uniform_buffers, uniform_buffers_memory) = share::create_uniform_buffers(
             &device,
@@ -191,7 +175,7 @@ impl GraphicsManager {
             swapchain_stuff.swapchain_extent,
             vertex_buffer,
             index_buffer,
-            INDICES_DATA.len() as u32,
+            index_data.len() as u32,
             pipeline_layout,
             &descriptor_sets,
         );
@@ -227,25 +211,17 @@ impl GraphicsManager {
             graphics_pipeline,
             ubo_layout,
 
+            index_data,
+
             vertex_buffer,
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
 
             uniform_transform: UniformBufferObject {
-                model: Matrix4::<f32>::identity(),
-                view: Matrix4::look_at(
-                    Point3::new(0.0, 0.0, 4.0),
-                    Point3::new(0.0, 0.0, 0.0),
-                    Vector3::new(0.0, 1.0, 0.0)
-                ),
-                proj: cgmath::perspective(
-                    Deg(45.0),
-                    swapchain_stuff.swapchain_extent.width as f32
-                        / swapchain_stuff.swapchain_extent.height as f32,
-                    0.1,
-                    10.0,
-                ),
+                model: scene.left_paddle.model_transform,
+                view: scene.camera.view,
+                proj: scene.camera.proj,
             },
             uniform_buffers,
             uniform_buffers_memory,
@@ -428,6 +404,19 @@ impl GraphicsManager {
         self.swapchain_format = swapchain_stuff.swapchain_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
+        // update camera aspect ratio
+        self.uniform_transform = UniformBufferObject {
+            model: self.uniform_transform.model,
+            view: self.uniform_transform.view,
+            proj: cgmath::perspective(
+                Deg(45.0),
+                self.swapchain_extent.width as f32
+                    / self.swapchain_extent.height as f32,
+                0.1,
+                10.0,
+            ),
+        };
+
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
         self.render_pass = share::create_render_pass(&self.device, self.swapchain_format);
@@ -455,7 +444,7 @@ impl GraphicsManager {
             self.swapchain_extent,
             self.vertex_buffer,
             self.index_buffer,
-            INDICES_DATA.len() as u32,
+            self.index_data.len() as u32,
             pipeline_layout,
             &self.descriptor_sets,
         );
