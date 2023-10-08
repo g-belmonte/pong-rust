@@ -13,6 +13,8 @@ use crate::graphics_manager::debug;
 use crate::graphics_manager::platforms;
 use crate::graphics_manager::structures::*;
 
+use super::ModelBuffers;
+
 pub fn create_instance(
     entry: &ash::Entry,
     window_title: &str,
@@ -755,11 +757,8 @@ pub fn create_command_buffers(
     framebuffers: &Vec<vk::Framebuffer>,
     render_pass: vk::RenderPass,
     surface_extent: vk::Extent2D,
-    vertex_buffer: vk::Buffer,
-    index_buffer: vk::Buffer,
-    index_count: u32,
     pipeline_layout: vk::PipelineLayout,
-    descriptor_sets: &Vec<vk::DescriptorSet>,
+    model_buffers: &Vec<ModelBuffers>,
 ) -> Vec<vk::CommandBuffer> {
     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -820,22 +819,24 @@ pub fn create_command_buffers(
                 graphics_pipeline,
             );
 
-            let vertex_buffers = [vertex_buffer];
-            let offsets = [0_u64];
-            let descriptor_sets_to_bind = [descriptor_sets[i]];
+            for buffers in model_buffers {
+                let vertex_buffers = [buffers.vertex_buffer];
+                let offsets = [0_u64];
+                let descriptor_sets_to_bind = [buffers.descriptor_sets[i]];
 
-            device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-            device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
-            device.cmd_bind_descriptor_sets(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline_layout,
-                0,
-                &descriptor_sets_to_bind,
-                &[],
-            );
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                device.cmd_bind_index_buffer(command_buffer, buffers.index_buffer, 0, vk::IndexType::UINT32);
+                device.cmd_bind_descriptor_sets(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    pipeline_layout,
+                    0,
+                    &descriptor_sets_to_bind,
+                    &[],
+                );
 
-            device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
+                device.cmd_draw_indexed(command_buffer, buffers.index_count, 1, 0, 0, 0);
+            }
 
             device.cmd_end_render_pass(command_buffer);
 

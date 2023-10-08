@@ -22,17 +22,24 @@ const VERTICES_DATA: [Vertex; 4] = [
 ];
 const INDICES_DATA: [u32; 6] = [0, 1, 2, 2, 3, 0];
 
-pub struct Paddle {
+#[derive(Clone)]
+pub struct ModelMesh {
     pub vertices: [Vertex; 4],
     pub indices: [u32; 6],
+}
+
+pub struct Paddle {
+    pub model_mesh: ModelMesh,
     pub model_transform: Matrix4<f32>,
 }
 
 impl Paddle {
     pub fn new(model_transform: Matrix4<f32>) -> Self {
         Self {
-            vertices: VERTICES_DATA,
-            indices: INDICES_DATA,
+            model_mesh: ModelMesh {
+                vertices: VERTICES_DATA,
+                indices: INDICES_DATA,
+            },
             model_transform,
         }
     }

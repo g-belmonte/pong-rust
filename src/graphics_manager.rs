@@ -22,6 +22,21 @@ use crate::scene::Scene;
 
 use self::structures::UniformBufferObject;
 
+pub struct ModelBuffers {
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
+    index_count: u32,
+
+    uniform_transform: UniformBufferObject,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: Vec<vk::DescriptorSet>,
+}
+
 pub struct GraphicsManager {
     window: winit::window::Window,
 
@@ -52,19 +67,7 @@ pub struct GraphicsManager {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
 
-    index_data: [u32; 6],
-
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
-
-    uniform_transform: UniformBufferObject,
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memory: Vec<vk::DeviceMemory>,
-
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    model_buffers: Vec<ModelBuffers>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -136,36 +139,53 @@ impl GraphicsManager {
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
 
-        let vertex_data = scene.left_paddle.vertices;
-        let index_data = scene.left_paddle.indices;
-        let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
-            &device,
-            &physical_device_memory_properties,
-            command_pool,
-            graphics_queue,
-            &vertex_data,
-        );
-        let (index_buffer, index_buffer_memory) = share::create_index_buffer(
-            &device,
-            &physical_device_memory_properties,
-            command_pool,
-            graphics_queue,
-            &index_data,
-        );
-        let (uniform_buffers, uniform_buffers_memory) = share::create_uniform_buffers(
-            &device,
-            &physical_device_memory_properties,
-            swapchain_stuff.swapchain_images.len(),
-        );
-        let descriptor_pool =
-            share::create_descriptor_pool(&device, swapchain_stuff.swapchain_images.len());
-        let descriptor_sets = share::create_descriptor_sets(
-            &device,
-            descriptor_pool,
-            ubo_layout,
-            &uniform_buffers,
-            swapchain_stuff.swapchain_images.len(),
-        );
+        let model_data = scene.get_model_data();
+        let model_buffers: Vec<ModelBuffers> = model_data.iter().map(|md| {
+            let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
+                &device,
+                &physical_device_memory_properties,
+                command_pool,
+                graphics_queue,
+                &md.model_mesh.vertices,
+            );
+            let (index_buffer, index_buffer_memory) = share::create_index_buffer(
+                &device,
+                &physical_device_memory_properties,
+                command_pool,
+                graphics_queue,
+                &md.model_mesh.indices,
+            );
+            let (uniform_buffers, uniform_buffers_memory) = share::create_uniform_buffers(
+                &device,
+                &physical_device_memory_properties,
+                swapchain_stuff.swapchain_images.len(),
+            );
+            let descriptor_pool =
+                share::create_descriptor_pool(&device, swapchain_stuff.swapchain_images.len());
+            let descriptor_sets = share::create_descriptor_sets(
+                &device,
+                descriptor_pool,
+                ubo_layout,
+                &uniform_buffers,
+                swapchain_stuff.swapchain_images.len(),
+            );
+
+            ModelBuffers {
+                vertex_buffer,
+                vertex_buffer_memory,
+                index_buffer,
+                index_buffer_memory,
+                index_count: md.model_mesh.indices.len() as u32,
+                uniform_transform: UniformBufferObject {
+                    model: md.model_transform, view: scene.camera.view, proj: scene.camera.proj
+                },
+                uniform_buffers,
+                uniform_buffers_memory,
+                descriptor_pool,
+                descriptor_sets,
+            }
+        }).collect();
+
         let command_buffers = share::create_command_buffers(
             &device,
             command_pool,
@@ -173,11 +193,8 @@ impl GraphicsManager {
             &swapchain_framebuffers,
             render_pass,
             swapchain_stuff.swapchain_extent,
-            vertex_buffer,
-            index_buffer,
-            index_data.len() as u32,
             pipeline_layout,
-            &descriptor_sets,
+            &model_buffers,
         );
         let sync_ojbects = share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
@@ -211,23 +228,7 @@ impl GraphicsManager {
             graphics_pipeline,
             ubo_layout,
 
-            index_data,
-
-            vertex_buffer,
-            vertex_buffer_memory,
-            index_buffer,
-            index_buffer_memory,
-
-            uniform_transform: UniformBufferObject {
-                model: scene.left_paddle.model_transform,
-                view: scene.camera.view,
-                proj: scene.camera.proj,
-            },
-            uniform_buffers,
-            uniform_buffers_memory,
-
-            descriptor_pool,
-            descriptor_sets,
+            model_buffers,
 
             command_pool,
             command_buffers,
@@ -350,26 +351,26 @@ impl GraphicsManager {
         // self.uniform_transform.model =
         //     Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
         //         * self.uniform_transform.model;
+        for buffers in &self.model_buffers {
+            let ubos = [buffers.uniform_transform];
+            let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
 
-        let ubos = [self.uniform_transform];
+            unsafe {
+                let data_ptr =
+                    self.device
+                        .map_memory(
+                            buffers.uniform_buffers_memory[current_image],
+                            0,
+                            buffer_size,
+                            vk::MemoryMapFlags::empty(),
+                        )
+                        .expect("Failed to Map Memory") as *mut UniformBufferObject;
 
-        let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
+                data_ptr.copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
 
-        unsafe {
-            let data_ptr =
                 self.device
-                    .map_memory(
-                        self.uniform_buffers_memory[current_image],
-                        0,
-                        buffer_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .expect("Failed to Map Memory") as *mut UniformBufferObject;
-
-            data_ptr.copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
-
-            self.device
-                .unmap_memory(self.uniform_buffers_memory[current_image]);
+                    .unmap_memory(buffers.uniform_buffers_memory[current_image]);
+            }
         }
     }
 
@@ -405,17 +406,19 @@ impl GraphicsManager {
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
         // update camera aspect ratio
-        self.uniform_transform = UniformBufferObject {
-            model: self.uniform_transform.model,
-            view: self.uniform_transform.view,
-            proj: cgmath::perspective(
-                Deg(45.0),
-                self.swapchain_extent.width as f32
-                    / self.swapchain_extent.height as f32,
-                0.1,
-                10.0,
-            ),
-        };
+        for buffers in self.model_buffers.iter_mut() {
+            buffers.uniform_transform = UniformBufferObject {
+                model: buffers.uniform_transform.model,
+                view: buffers.uniform_transform.view,
+                proj: cgmath::perspective(
+                    Deg(45.0),
+                    self.swapchain_extent.width as f32
+                        / self.swapchain_extent.height as f32,
+                    0.1,
+                    10.0,
+                ),
+            }
+        }
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
@@ -442,11 +445,8 @@ impl GraphicsManager {
             &self.swapchain_framebuffers,
             self.render_pass,
             self.swapchain_extent,
-            self.vertex_buffer,
-            self.index_buffer,
-            self.index_data.len() as u32,
             pipeline_layout,
-            &self.descriptor_sets,
+            &self.model_buffers,
         );
     }
 
@@ -483,20 +483,22 @@ impl Drop for GraphicsManager {
 
             self.cleanup_swapchain();
 
-            self.device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
-
-            for i in 0..self.uniform_buffers.len() {
-                self.device.destroy_buffer(self.uniform_buffers[i], None);
+            for buffers in self.model_buffers.iter() {
                 self.device
-                    .free_memory(self.uniform_buffers_memory[i], None);
+                    .destroy_descriptor_pool(buffers.descriptor_pool, None);
+
+                for i in 0..buffers.uniform_buffers.len() {
+                    self.device.destroy_buffer(buffers.uniform_buffers[i], None);
+                    self.device
+                        .free_memory(buffers.uniform_buffers_memory[i], None);
+                }
+
+                self.device.destroy_buffer(buffers.index_buffer, None);
+                self.device.free_memory(buffers.index_buffer_memory, None);
+
+                self.device.destroy_buffer(buffers.vertex_buffer, None);
+                self.device.free_memory(buffers.vertex_buffer_memory, None);
             }
-
-            self.device.destroy_buffer(self.index_buffer, None);
-            self.device.free_memory(self.index_buffer_memory, None);
-
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
 
             self.device
                 .destroy_descriptor_set_layout(self.ubo_layout, None);
