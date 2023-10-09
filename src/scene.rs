@@ -1,8 +1,8 @@
-use cgmath::{Matrix4, Point3, Vector3, Deg, SquareMatrix};
+use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 
 use crate::camera::Camera;
-use crate::graphics_manager::constants::{WINDOW_WIDTH, WINDOW_HEIGHT};
-use crate::paddle::{Paddle, ModelMesh};
+use crate::graphics_manager::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
+use crate::paddle::{ModelMesh, Paddle};
 
 pub struct ModelData {
     pub model_mesh: ModelMesh,
@@ -22,7 +22,7 @@ impl Scene {
                 Matrix4::look_at(
                     Point3::new(0.0, 0.0, 4.0),
                     Point3::new(0.0, 0.0, 0.0),
-                    Vector3::new(0.0, 1.0, 0.0)
+                    Vector3::new(0.0, 1.0, 0.0),
                 ),
                 cgmath::perspective(
                     Deg(45.0),
@@ -31,8 +31,22 @@ impl Scene {
                     10.0,
                 ),
             ),
-            left_paddle: Paddle::new(Matrix4::<f32>::identity() + Matrix4::from_translation(Vector3 { x: -3.7, y: 0.0, z: 0.0 })),
-            right_paddle: Paddle::new(Matrix4::<f32>::identity() + Matrix4::from_translation(Vector3 { x: 3.7, y: 0.0, z: 0.0 })),
+            left_paddle: Paddle::new(
+                Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(Vector3 {
+                        x: -3.7,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+            ),
+            right_paddle: Paddle::new(
+                Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(Vector3 {
+                        x: 3.7,
+                        y: 0.0,
+                        z: 0.0,
+                    }),
+            ),
         }
     }
 
@@ -45,7 +59,7 @@ impl Scene {
             ModelData {
                 model_mesh: self.right_paddle.model_mesh.clone(),
                 model_transform: self.right_paddle.model_transform,
-            }
+            },
         ]
     }
 }

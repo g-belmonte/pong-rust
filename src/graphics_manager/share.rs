@@ -825,7 +825,12 @@ pub fn create_command_buffers(
                 let descriptor_sets_to_bind = [buffers.descriptor_sets[i]];
 
                 device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                device.cmd_bind_index_buffer(command_buffer, buffers.index_buffer, 0, vk::IndexType::UINT32);
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    buffers.index_buffer,
+                    0,
+                    vk::IndexType::UINT32,
+                );
                 device.cmd_bind_descriptor_sets(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,

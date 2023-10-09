@@ -23,8 +23,6 @@ pub const IS_PAINT_FPS_COUNTER: bool = true;
 
 impl DeviceExtension {
     pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
-        [
-            ash::extensions::khr::Swapchain::name().as_ptr(),
-        ]
+        [ash::extensions::khr::Swapchain::name().as_ptr()]
     }
 }
