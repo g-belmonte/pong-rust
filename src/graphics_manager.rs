@@ -8,6 +8,7 @@ pub mod tools;
 pub mod window;
 
 use cgmath::Deg;
+use cgmath::Matrix4;
 use constants::*;
 use structures::{QueueFamilyIndices, SurfaceStuff};
 
@@ -80,7 +81,7 @@ pub struct GraphicsManager {
 }
 
 impl GraphicsManager {
-    pub fn new(event_loop: &winit::event_loop::EventLoop<()>, scene: Scene) -> GraphicsManager {
+    pub fn new(event_loop: &winit::event_loop::EventLoop<()>, scene: &Scene) -> GraphicsManager {
         let window = window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = ash::Entry::new().unwrap();
@@ -258,7 +259,7 @@ impl GraphicsManager {
         };
     }
 
-    pub fn draw_frame(&mut self, delta_time: f32) {
+    pub fn draw_frame(&mut self, transforms: Vec<Matrix4<f32>>) {
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
@@ -286,7 +287,7 @@ impl GraphicsManager {
             }
         };
 
-        self.update_uniform_buffer(image_index as usize, delta_time);
+        self.update_uniform_buffer(image_index as usize, transforms);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -351,11 +352,9 @@ impl GraphicsManager {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    fn update_uniform_buffer(&mut self, current_image: usize, delta_time: f32) {
-        // self.uniform_transform.model =
-        //     Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
-        //         * self.uniform_transform.model;
-        for buffers in &self.model_buffers {
+    fn update_uniform_buffer(&mut self, current_image: usize, transforms: Vec<Matrix4<f32>>) {
+        for (i, buffers) in self.model_buffers.iter_mut().enumerate() {
+            buffers.uniform_transform.model = transforms[i];
             let ubos = [buffers.uniform_transform];
             let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
 

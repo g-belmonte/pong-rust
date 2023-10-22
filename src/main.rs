@@ -12,6 +12,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 struct PongRust {
     graphics_manager: GraphicsManager,
+    scene: Scene,
 }
 
 impl PongRust {
@@ -44,8 +45,10 @@ impl PongRust {
                     self.graphics_manager.window_request_redraw();
                 }
                 Event::RedrawRequested(_window_id) => {
-                    let delta_time = tick_counter.delta_time(); //
-                    self.graphics_manager.draw_frame(delta_time);
+                    let _delta_time = tick_counter.delta_time();
+                    // TODO: simulate changes using the delta time
+                    let transforms = self.scene.get_model_transforms();
+                    self.graphics_manager.draw_frame(transforms);
 
                     if IS_PAINT_FPS_COUNTER {
                         print!("FPS: {}\r", tick_counter.fps());
@@ -63,8 +66,8 @@ impl PongRust {
 fn main() {
     let event_loop = EventLoop::new();
     let scene = Scene::new();
-    let graphics_manager = GraphicsManager::new(&event_loop, scene);
-    let pong_rust = PongRust { graphics_manager };
+    let graphics_manager = GraphicsManager::new(&event_loop, &scene);
+    let pong_rust = PongRust { graphics_manager, scene };
 
     pong_rust.main_loop(event_loop);
 }

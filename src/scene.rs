@@ -62,4 +62,11 @@ impl Scene {
             },
         ]
     }
+
+    pub fn get_model_transforms(&self) -> Vec<Matrix4<f32>> {
+        vec![
+            self.left_paddle.model_transform,
+            self.right_paddle.model_transform,
+        ]
+    }
 }
