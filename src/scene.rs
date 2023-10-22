@@ -15,6 +15,17 @@ pub struct Scene {
     pub right_paddle: Paddle,
 }
 
+
+
+pub enum Action {
+    LeftPaddleUp,
+    LeftPaddleDown,
+    LeftPaddleStop,
+    RightPaddleUp,
+    RightPaddleDown,
+    RightPaddleStop,
+}
+
 impl Scene {
     pub fn new() -> Self {
         Self {
@@ -67,6 +78,20 @@ impl Scene {
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        self.left_paddle.position += Vector3::unit_y() * delta_time;
+        self.left_paddle.position += Vector3::unit_y() * delta_time * self.left_paddle.velocity;
+        self.right_paddle.position += Vector3::unit_y() * delta_time * self.right_paddle.velocity;
+    }
+
+    pub fn handle_action(&mut self, action: Action) {
+        match action {
+            // positive y is downwards
+            Action::LeftPaddleUp => self.left_paddle.velocity = -2.0,
+            Action::LeftPaddleDown => self.left_paddle.velocity = 2.0,
+            Action::LeftPaddleStop => self.left_paddle.velocity = 0.0,
+            Action::RightPaddleUp => self.right_paddle.velocity = -2.0,
+            Action::RightPaddleDown => self.right_paddle.velocity = 2.0,
+            Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
+
+        }
     }
 }

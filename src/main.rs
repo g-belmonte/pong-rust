@@ -26,18 +26,44 @@ impl PongRust {
                         self.graphics_manager.device_wait_idle();
                         *control_flow = ControlFlow::Exit
                     }
-                    WindowEvent::KeyboardInput { input, .. } => match input {
-                        KeyboardInput {
+                    WindowEvent::KeyboardInput { input, .. } => {
+                        let KeyboardInput {
                             virtual_keycode,
                             state,
                             ..
-                        } => match (virtual_keycode, state) {
+                        } = input;
+                        match (virtual_keycode, state) {
                             (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
                                 self.graphics_manager.device_wait_idle();
                                 *control_flow = ControlFlow::Exit
-                            }
+                            },
+
+                            (Some(VirtualKeyCode::W), ElementState::Pressed) => {
+                                self.scene.handle_action(scene::Action::LeftPaddleUp)
+                            },
+                            (Some(VirtualKeyCode::W), ElementState::Released) => {
+                                self.scene.handle_action(scene::Action::LeftPaddleStop)
+                            },
+                            (Some(VirtualKeyCode::S), ElementState::Pressed) => {
+                                self.scene.handle_action(scene::Action::LeftPaddleDown)
+                            },
+                            (Some(VirtualKeyCode::S), ElementState::Released) => {
+                                self.scene.handle_action(scene::Action::LeftPaddleStop)
+                            },
+                            (Some(VirtualKeyCode::I), ElementState::Pressed) => {
+                                self.scene.handle_action(scene::Action::RightPaddleUp)
+                            },
+                            (Some(VirtualKeyCode::I), ElementState::Released) => {
+                                self.scene.handle_action(scene::Action::RightPaddleStop)
+                            },
+                            (Some(VirtualKeyCode::K), ElementState::Pressed) => {
+                                self.scene.handle_action(scene::Action::RightPaddleDown)
+                            },
+                            (Some(VirtualKeyCode::K), ElementState::Released) => {
+                                self.scene.handle_action(scene::Action::RightPaddleStop)
+                            },
                             _ => {}
-                        },
+                        };
                     },
                     _ => {}
                 },
