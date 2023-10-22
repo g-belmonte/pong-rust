@@ -45,8 +45,8 @@ impl PongRust {
                     self.graphics_manager.window_request_redraw();
                 }
                 Event::RedrawRequested(_window_id) => {
-                    let _delta_time = tick_counter.delta_time();
-                    // TODO: simulate changes using the delta time
+                    let delta_time = tick_counter.delta_time();
+                    self.scene.update(delta_time);
                     let transforms = self.scene.get_model_transforms();
                     self.graphics_manager.draw_frame(transforms);
 

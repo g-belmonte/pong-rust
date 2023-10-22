@@ -1,4 +1,4 @@
-use cgmath::Matrix4;
+use cgmath::Vector3;
 
 use crate::graphics_manager::structures::Vertex;
 
@@ -30,18 +30,18 @@ pub struct ModelMesh {
 
 pub struct Paddle {
     pub model_mesh: ModelMesh,
-    pub model_transform: Matrix4<f32>,
+    pub position: Vector3<f32>,
     pub velocity: f32,
 }
 
 impl Paddle {
-    pub fn new(model_transform: Matrix4<f32>) -> Self {
+    pub fn new(position: Vector3<f32>) -> Self {
         Self {
             model_mesh: ModelMesh {
                 vertices: VERTICES_DATA,
                 indices: INDICES_DATA,
             },
-            model_transform,
+            position,
             velocity: 0.0,
         }
     }

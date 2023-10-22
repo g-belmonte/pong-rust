@@ -31,22 +31,16 @@ impl Scene {
                     10.0,
                 ),
             ),
-            left_paddle: Paddle::new(
-                Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(Vector3 {
-                        x: -3.7,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
-            ),
-            right_paddle: Paddle::new(
-                Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(Vector3 {
-                        x: 3.7,
-                        y: 0.0,
-                        z: 0.0,
-                    }),
-            ),
+            left_paddle: Paddle::new(Vector3 {
+                x: -3.7,
+                y: 0.0,
+                z: 0.0,
+            }),
+            right_paddle: Paddle::new(Vector3 {
+                x: 3.7,
+                y: 0.0,
+                z: 0.0,
+            }),
         }
     }
 
@@ -54,19 +48,25 @@ impl Scene {
         vec![
             ModelData {
                 model_mesh: self.left_paddle.model_mesh.clone(),
-                model_transform: self.left_paddle.model_transform,
+                model_transform: Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(self.left_paddle.position),
             },
             ModelData {
                 model_mesh: self.right_paddle.model_mesh.clone(),
-                model_transform: self.right_paddle.model_transform,
+                model_transform: Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(self.right_paddle.position),
             },
         ]
     }
 
     pub fn get_model_transforms(&self) -> Vec<Matrix4<f32>> {
         vec![
-            self.left_paddle.model_transform,
-            self.right_paddle.model_transform,
+            Matrix4::<f32>::identity() + Matrix4::from_translation(self.left_paddle.position),
+            Matrix4::<f32>::identity() + Matrix4::from_translation(self.right_paddle.position),
         ]
+    }
+
+    pub fn update(&mut self, delta_time: f32) {
+        self.left_paddle.position += Vector3::unit_y() * delta_time;
     }
 }
