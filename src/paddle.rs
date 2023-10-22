@@ -31,6 +31,7 @@ pub struct ModelMesh {
 pub struct Paddle {
     pub model_mesh: ModelMesh,
     pub model_transform: Matrix4<f32>,
+    pub velocity: f32,
 }
 
 impl Paddle {
@@ -41,6 +42,7 @@ impl Paddle {
                 indices: INDICES_DATA,
             },
             model_transform,
+            velocity: 0.0,
         }
     }
 }
