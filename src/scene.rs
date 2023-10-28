@@ -32,6 +32,8 @@ pub enum Action {
     RightPaddleDown,
     RightPaddleStop,
     Kickoff,
+    GameOver,
+    ResetGame,
 }
 
 impl Scene {
@@ -129,6 +131,10 @@ impl Scene {
         self.ball.position.y += delta_time * self.ball.velocity.y;
     }
 
+    pub fn game_over(&self) -> bool {
+        self.ball.position.x > 1.0 || self.ball.position.x < -1.0
+    }
+
     pub fn handle_action(&mut self, action: Action) {
         match action {
             // positive y is downwards
@@ -139,6 +145,17 @@ impl Scene {
             Action::RightPaddleDown => self.right_paddle.velocity = 2.0,
             Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
             Action::Kickoff => self.ball.velocity = cgmath::vec2(1.0, 0.3),
+            Action::GameOver => {
+                self.ball.velocity = cgmath::vec2(0.0, 0.0);
+                self.left_paddle.velocity = 0.0;
+                self.right_paddle.velocity = 0.0;
+            },
+            Action::ResetGame => {
+                self.ball.position.x = 0.0;
+                self.ball.position.y = 0.0;
+                self.left_paddle.position.y = 0.0;
+                self.right_paddle.position.y = 0.0;
+            },
         }
     }
 }

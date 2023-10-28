@@ -64,6 +64,10 @@ impl PongRust {
             }
             Event::RedrawRequested(_window_id) => {
                 let delta_time = tick_counter.delta_time();
+                if self.scene.game_over() {
+                    self.scene.handle_action(scene::Action::GameOver);
+                    self.game_phase = GamePhase::End;
+                }
                 self.scene.update(delta_time);
                 let transforms = self.scene.get_model_transforms();
                 self.graphics_manager.draw_frame(transforms);
@@ -90,11 +94,18 @@ impl PongRust {
                 Some(PongRustActions::SystemAction(Action::Quit))
             },
             (Some(VirtualKeyCode::Space), ElementState::Pressed) => {
-                if self.game_phase == GamePhase::Start {
-                    self.game_phase = GamePhase::Playing;
-                    Some(PongRustActions::SceneAction(scene::Action::Kickoff))
-                } else {
-                    None
+                match self.game_phase {
+                    GamePhase::Start => {
+                        self.game_phase = GamePhase::Playing;
+                        Some(PongRustActions::SceneAction(scene::Action::Kickoff))
+
+                    },
+                    GamePhase::Playing => None,
+                    GamePhase::End => {
+                        self.game_phase = GamePhase::Start;
+                        Some(PongRustActions::SceneAction(scene::Action::ResetGame))
+                    }
+
                 }
             },
             (Some(VirtualKeyCode::W), ElementState::Pressed) => {
