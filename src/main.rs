@@ -1,3 +1,4 @@
+mod ball;
 mod camera;
 mod graphics_manager;
 mod paddle;

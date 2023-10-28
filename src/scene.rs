@@ -1,6 +1,7 @@
-use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
+use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3, Zero};
 use num::clamp;
 
+use crate::ball::Ball;
 use crate::camera::Camera;
 use crate::graphics_manager::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::graphics_manager::structures::ModelMesh;
@@ -18,6 +19,7 @@ pub struct Scene {
     pub right_paddle: Paddle,
     pub top_wall: Wall,
     pub bottom_wall: Wall,
+    pub ball: Ball,
 }
 
 
@@ -67,6 +69,7 @@ impl Scene {
                 y: 3.2,
                 z: 0.0,
             }),
+            ball: Ball::new(Vector3::zero()),
         }
     }
 
@@ -91,6 +94,11 @@ impl Scene {
                 model_mesh: self.bottom_wall.model_mesh.clone(),
                 model_transform: Matrix4::<f32>::identity()
                     + Matrix4::from_translation(self.bottom_wall.position),
+            },
+            ModelData {
+                model_mesh: self.ball.model_mesh.clone(),
+                model_transform: Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(self.ball.position),
             }
         ]
     }
@@ -101,6 +109,7 @@ impl Scene {
             Matrix4::<f32>::identity() + Matrix4::from_translation(self.right_paddle.position),
             Matrix4::<f32>::identity() + Matrix4::from_translation(self.top_wall.position),
             Matrix4::<f32>::identity() + Matrix4::from_translation(self.bottom_wall.position),
+            Matrix4::<f32>::identity() + Matrix4::from_translation(self.ball.position),
         ]
     }
 
