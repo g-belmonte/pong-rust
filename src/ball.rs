@@ -1,4 +1,4 @@
-use cgmath::Vector3;
+use cgmath::{Vector3, Vector2};
 
 use crate::graphics_manager::structures::{ModelMesh, Vertex};
 
@@ -25,7 +25,7 @@ const INDICES_DATA: [u32; 6] = [0, 1, 2, 2, 3, 0];
 pub struct Ball {
     pub model_mesh: ModelMesh,
     pub position: Vector3<f32>,
-    pub velocity: f32,
+    pub velocity: Vector2<f32>,
 }
 
 impl Ball {
@@ -36,7 +36,7 @@ impl Ball {
                 indices: INDICES_DATA,
             },
             position,
-            velocity: 0.0,
+            velocity: Vector2 { x: 0.0, y: 0.0  },
         }
     }
 }

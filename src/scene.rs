@@ -31,6 +31,7 @@ pub enum Action {
     RightPaddleUp,
     RightPaddleDown,
     RightPaddleStop,
+    Kickoff,
 }
 
 impl Scene {
@@ -124,6 +125,8 @@ impl Scene {
             -2.0,
             2.0
         );
+        self.ball.position.x += delta_time * self.ball.velocity.x;
+        self.ball.position.y += delta_time * self.ball.velocity.y;
     }
 
     pub fn handle_action(&mut self, action: Action) {
@@ -135,7 +138,7 @@ impl Scene {
             Action::RightPaddleUp => self.right_paddle.velocity = -2.0,
             Action::RightPaddleDown => self.right_paddle.velocity = 2.0,
             Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
-
+            Action::Kickoff => self.ball.velocity = cgmath::vec2(1.0, 0.3),
         }
     }
 }
