@@ -4,19 +4,19 @@ use crate::graphics_manager::structures::{ModelMesh, Vertex};
 
 const VERTICES_DATA: [Vertex; 4] = [
     Vertex {
-        pos: [-0.2, -0.5],
+        pos: [-0.1, -0.5],
         color: [1.0, 0.0, 0.0],
     },
     Vertex {
-        pos: [0.2, -0.5],
+        pos: [0.1, -0.5],
         color: [0.0, 1.0, 0.0],
     },
     Vertex {
-        pos: [0.2, 0.5],
+        pos: [0.1, 0.5],
         color: [0.0, 0.0, 1.0],
     },
     Vertex {
-        pos: [-0.2, 0.5],
+        pos: [-0.1, 0.5],
         color: [1.0, 1.0, 1.0],
     },
 ];
