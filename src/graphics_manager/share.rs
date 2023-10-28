@@ -419,7 +419,7 @@ pub fn choose_swapchain_format(
 }
 
 pub fn choose_swapchain_present_mode(
-    available_present_modes: &Vec<vk::PresentModeKHR>,
+    available_present_modes: &[vk::PresentModeKHR],
 ) -> vk::PresentModeKHR {
     for &available_present_mode in available_present_modes.iter() {
         if available_present_mode == vk::PresentModeKHR::MAILBOX {
@@ -703,7 +703,7 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
 pub fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    image_views: &Vec<vk::ImageView>,
+    image_views: &[vk::ImageView],
     swapchain_extent: vk::Extent2D,
 ) -> Vec<vk::Framebuffer> {
     image_views
@@ -1041,7 +1041,7 @@ pub fn create_descriptor_sets(
     device: &ash::Device,
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    uniforms_buffers: &Vec<vk::Buffer>,
+    uniforms_buffers: &[vk::Buffer],
     swapchain_images_size: usize,
 ) -> Vec<vk::DescriptorSet> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
@@ -1143,7 +1143,7 @@ pub fn create_uniform_buffers(
 pub fn create_image_views(
     device: &ash::Device,
     surface_format: vk::Format,
-    images: &Vec<vk::Image>,
+    images: &[vk::Image],
 ) -> Vec<vk::ImageView> {
     let swapchain_imageviews: Vec<vk::ImageView> = images
         .iter()
