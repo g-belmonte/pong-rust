@@ -1,5 +1,6 @@
-use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3, Zero};
+use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector2, Vector3, Zero};
 use num::clamp;
+use rand::Rng;
 
 use crate::ball::Ball;
 use crate::camera::Camera;
@@ -22,7 +23,11 @@ pub struct Scene {
     pub ball: Ball,
 }
 
-
+mod color {
+    pub const RED: [f32; 3] = [1.0, 0.0, 0.0];
+    pub const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
+    pub const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
+}
 
 pub enum Action {
     LeftPaddleUp,
@@ -52,16 +57,22 @@ impl Scene {
                     10.0,
                 ),
             ),
-            left_paddle: Paddle::new(Vector3 {
-                x: -3.7,
-                y: 0.0,
-                z: 0.0,
-            }),
-            right_paddle: Paddle::new(Vector3 {
-                x: 3.7,
-                y: 0.0,
-                z: 0.0,
-            }),
+            left_paddle: Paddle::new(
+                Vector3 {
+                    x: -3.7,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                color::RED,
+            ),
+            right_paddle: Paddle::new(
+                Vector3 {
+                    x: 3.7,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                color::BLUE,
+            ),
             top_wall: Wall::new(Vector3 {
                 x: 0.0,
                 y: -3.2,
@@ -72,7 +83,7 @@ impl Scene {
                 y: 3.2,
                 z: 0.0,
             }),
-            ball: Ball::new(Vector3::zero()),
+            ball: Ball::new(Vector3::zero(), color::GREEN),
         }
     }
 
@@ -102,7 +113,7 @@ impl Scene {
                 model_mesh: self.ball.model_mesh.clone(),
                 model_transform: Matrix4::<f32>::identity()
                     + Matrix4::from_translation(self.ball.position),
-            }
+            },
         ]
     }
 
@@ -120,19 +131,19 @@ impl Scene {
         self.left_paddle.position.y = clamp(
             self.left_paddle.position.y + (delta_time * self.left_paddle.velocity),
             -2.0,
-            2.0
+            2.0,
         );
         self.right_paddle.position.y = clamp(
             self.right_paddle.position.y + (delta_time * self.right_paddle.velocity),
             -2.0,
-            2.0
+            2.0,
         );
         self.ball.position.x += delta_time * self.ball.velocity.x;
         self.ball.position.y += delta_time * self.ball.velocity.y;
     }
 
     pub fn game_over(&self) -> bool {
-        self.ball.position.x > 1.0 || self.ball.position.x < -1.0
+        self.ball.position.x > 4.7 || self.ball.position.x < -4.7
     }
 
     pub fn handle_action(&mut self, action: Action) {
@@ -144,18 +155,25 @@ impl Scene {
             Action::RightPaddleUp => self.right_paddle.velocity = -2.0,
             Action::RightPaddleDown => self.right_paddle.velocity = 2.0,
             Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
-            Action::Kickoff => self.ball.velocity = cgmath::vec2(1.0, 0.3),
+            Action::Kickoff => {
+                let mut rng = rand::thread_rng();
+                self.ball.velocity = Vector2::unit_x();
+                self.ball.velocity.y = rng.gen_range(-0.3..0.3);
+                if rand::random() {
+                    self.ball.velocity.x *= -1.0;
+                }
+            }
             Action::GameOver => {
                 self.ball.velocity = cgmath::vec2(0.0, 0.0);
                 self.left_paddle.velocity = 0.0;
                 self.right_paddle.velocity = 0.0;
-            },
+            }
             Action::ResetGame => {
                 self.ball.position.x = 0.0;
                 self.ball.position.y = 0.0;
                 self.left_paddle.position.y = 0.0;
                 self.right_paddle.position.y = 0.0;
-            },
+            }
         }
     }
 }
