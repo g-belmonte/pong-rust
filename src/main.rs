@@ -2,6 +2,7 @@ mod camera;
 mod graphics_manager;
 mod paddle;
 mod scene;
+mod wall;
 
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
 use crate::graphics_manager::GraphicsManager;

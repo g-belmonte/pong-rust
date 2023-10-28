@@ -2,7 +2,9 @@ use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 
 use crate::camera::Camera;
 use crate::graphics_manager::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
-use crate::paddle::{ModelMesh, Paddle};
+use crate::graphics_manager::structures::ModelMesh;
+use crate::paddle::Paddle;
+use crate::wall::Wall;
 
 pub struct ModelData {
     pub model_mesh: ModelMesh,
@@ -13,6 +15,8 @@ pub struct Scene {
     pub camera: Camera,
     pub left_paddle: Paddle,
     pub right_paddle: Paddle,
+    pub top_wall: Wall,
+    pub bottom_wall: Wall,
 }
 
 
@@ -52,6 +56,16 @@ impl Scene {
                 y: 0.0,
                 z: 0.0,
             }),
+            top_wall: Wall::new(Vector3 {
+                x: 0.0,
+                y: -3.2,
+                z: 0.0,
+            }),
+            bottom_wall: Wall::new(Vector3 {
+                x: 0.0,
+                y: 3.2,
+                z: 0.0,
+            }),
         }
     }
 
@@ -67,6 +81,16 @@ impl Scene {
                 model_transform: Matrix4::<f32>::identity()
                     + Matrix4::from_translation(self.right_paddle.position),
             },
+            ModelData {
+                model_mesh: self.top_wall.model_mesh.clone(),
+                model_transform: Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(self.top_wall.position),
+            },
+            ModelData {
+                model_mesh: self.bottom_wall.model_mesh.clone(),
+                model_transform: Matrix4::<f32>::identity()
+                    + Matrix4::from_translation(self.bottom_wall.position),
+            }
         ]
     }
 
@@ -74,6 +98,8 @@ impl Scene {
         vec![
             Matrix4::<f32>::identity() + Matrix4::from_translation(self.left_paddle.position),
             Matrix4::<f32>::identity() + Matrix4::from_translation(self.right_paddle.position),
+            Matrix4::<f32>::identity() + Matrix4::from_translation(self.top_wall.position),
+            Matrix4::<f32>::identity() + Matrix4::from_translation(self.bottom_wall.position),
         ]
     }
 

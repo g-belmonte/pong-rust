@@ -53,6 +53,12 @@ pub struct SyncObjects {
     pub inflight_fences: Vec<vk::Fence>,
 }
 
+#[derive(Clone)]
+pub struct ModelMesh {
+    pub vertices: [Vertex; 4],
+    pub indices: [u32; 6],
+}
+
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]
 pub struct UniformBufferObject {
