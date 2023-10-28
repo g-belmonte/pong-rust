@@ -1,4 +1,5 @@
 use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
+use num::clamp;
 
 use crate::camera::Camera;
 use crate::graphics_manager::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
@@ -104,8 +105,16 @@ impl Scene {
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        self.left_paddle.position += Vector3::unit_y() * delta_time * self.left_paddle.velocity;
-        self.right_paddle.position += Vector3::unit_y() * delta_time * self.right_paddle.velocity;
+        self.left_paddle.position.y = clamp(
+            self.left_paddle.position.y + (delta_time * self.left_paddle.velocity),
+            -2.0,
+            2.0
+        );
+        self.right_paddle.position.y = clamp(
+            self.right_paddle.position.y + (delta_time * self.right_paddle.velocity),
+            -2.0,
+            2.0
+        );
     }
 
     pub fn handle_action(&mut self, action: Action) {
