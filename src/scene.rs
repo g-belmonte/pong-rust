@@ -135,16 +135,42 @@ impl Scene {
     }
 
     pub fn update(&mut self, delta_time: f32) {
+        // Remember: positive Y is downwards, so upper_boundary < lower_boundary
+        let upper_boundary = self.top_wall.position.y + (self.top_wall.height / 2.0);
+        let lower_boundary = self.bottom_wall.position.y - (self.top_wall.height / 2.0);
+
+        // simulate paddles touching the walls
         self.left_paddle.position.y = clamp(
             self.left_paddle.position.y + (delta_time * self.left_paddle.velocity),
-            -2.0,
-            2.0,
+            upper_boundary + self.left_paddle.height / 2.0,
+            lower_boundary - self.left_paddle.height / 2.0,
         );
         self.right_paddle.position.y = clamp(
             self.right_paddle.position.y + (delta_time * self.right_paddle.velocity),
-            -2.0,
-            2.0,
+            upper_boundary + self.right_paddle.height / 2.0,
+            lower_boundary - self.right_paddle.height / 2.0,
         );
+
+        // simulate ball touching walls
+        let is_touching_walls = self.ball.position.y + (self.ball.side_length / 2.0)
+            > lower_boundary
+            || self.ball.position.y - (self.ball.side_length / 2.0) < upper_boundary;
+        if is_touching_walls {
+            self.ball.velocity.y *= -1.0;
+        }
+
+        // simulate ball touching paddles
+        let is_touching_left_paddle = self.ball.position.x - (self.ball.side_length / 2.0) < self.left_paddle.position.x + (self.left_paddle.width / 2.0)
+            && self.ball.position.y + (self.ball.side_length / 2.0) > self.left_paddle.position.y - (self.left_paddle.height / 2.0)
+            && self.ball.position.y - (self.ball.side_length / 2.0) < self.left_paddle.position.y + (self.left_paddle.height / 2.0);
+        let is_touching_right_paddle = self.ball.position.x + (self.ball.side_length / 2.0) > self.right_paddle.position.x - (self.right_paddle.width / 2.0)
+            && self.ball.position.y + (self.ball.side_length / 2.0) > self.right_paddle.position.y - (self.right_paddle.height / 2.0)
+            && self.ball.position.y - (self.ball.side_length / 2.0) < self.right_paddle.position.y + (self.right_paddle.height / 2.0);
+        let is_touching_paddles = is_touching_left_paddle || is_touching_right_paddle;
+        if is_touching_paddles {
+            self.ball.velocity.x *= -1.0;
+        }
+
         self.ball.position.x += delta_time * self.ball.velocity.x;
         self.ball.position.y += delta_time * self.ball.velocity.y;
     }
