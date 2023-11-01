@@ -1,4 +1,4 @@
-use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector2, Vector3, Zero};
+use cgmath::{Deg, Matrix4, Point3, Vector2, Vector3, Zero};
 use num::clamp;
 use rand::Rng;
 
@@ -46,7 +46,7 @@ impl Scene {
         Self {
             camera: Camera::new(
                 Matrix4::look_at(
-                    Point3::new(0.0, 0.0, 4.0),
+                    Point3::new(0.0, 0.0, 10.0),
                     Point3::new(0.0, 0.0, 0.0),
                     Vector3::new(0.0, 1.0, 0.0),
                 ),
@@ -59,21 +59,21 @@ impl Scene {
             ),
             left_paddle: Paddle::new(
                 Vector3 {
-                    x: -3.7,
+                    x: -4.0,
                     y: 0.0,
                     z: 0.0,
                 },
-                1.0,
+                2.0,
                 0.2,
                 color::RED,
             ),
             right_paddle: Paddle::new(
                 Vector3 {
-                    x: 3.7,
+                    x: 4.0,
                     y: 0.0,
                     z: 0.0,
                 },
-                1.0,
+                2.0,
                 0.2,
                 color::BLUE,
             ),
@@ -84,7 +84,7 @@ impl Scene {
                     z: 0.0,
                 },
                 0.2,
-                7.4,
+                10.0,
             ),
             bottom_wall: Wall::new(
                 Vector3 {
@@ -93,7 +93,7 @@ impl Scene {
                     z: 0.0,
                 },
                 0.2,
-                7.4,
+                10.0,
             ),
             ball: Ball::new(Vector3::zero(), 0.2, color::GREEN),
         }
@@ -126,11 +126,11 @@ impl Scene {
 
     pub fn get_model_transforms(&self) -> Vec<Matrix4<f32>> {
         vec![
-             Matrix4::from_translation(self.left_paddle.position),
-             Matrix4::from_translation(self.right_paddle.position),
-             Matrix4::from_translation(self.top_wall.position),
-             Matrix4::from_translation(self.bottom_wall.position),
-             Matrix4::from_translation(self.ball.position),
+            Matrix4::from_translation(self.left_paddle.position),
+            Matrix4::from_translation(self.right_paddle.position),
+            Matrix4::from_translation(self.top_wall.position),
+            Matrix4::from_translation(self.bottom_wall.position),
+            Matrix4::from_translation(self.ball.position),
         ]
     }
 
@@ -164,8 +164,10 @@ impl Scene {
             Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
             Action::Kickoff => {
                 let mut rng = rand::thread_rng();
-                self.ball.velocity = Vector2::unit_x();
-                self.ball.velocity.y = rng.gen_range(-0.3..0.3);
+                self.ball.velocity = Vector2 {
+                    x: -2.0,
+                    y: rng.gen_range(-1.0..1.0),
+                };
                 if rand::random() {
                     self.ball.velocity.x *= -1.0;
                 }
