@@ -103,39 +103,34 @@ impl Scene {
         vec![
             ModelData {
                 model_mesh: self.left_paddle.model_mesh.clone(),
-                model_transform: Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(self.left_paddle.position),
+                model_transform: Matrix4::from_translation(self.left_paddle.position),
             },
             ModelData {
                 model_mesh: self.right_paddle.model_mesh.clone(),
-                model_transform: Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(self.right_paddle.position),
+                model_transform: Matrix4::from_translation(self.right_paddle.position),
             },
             ModelData {
                 model_mesh: self.top_wall.model_mesh.clone(),
-                model_transform: Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(self.top_wall.position),
+                model_transform: Matrix4::from_translation(self.top_wall.position),
             },
             ModelData {
                 model_mesh: self.bottom_wall.model_mesh.clone(),
-                model_transform: Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(self.bottom_wall.position),
+                model_transform: Matrix4::from_translation(self.bottom_wall.position),
             },
             ModelData {
                 model_mesh: self.ball.model_mesh.clone(),
-                model_transform: Matrix4::<f32>::identity()
-                    + Matrix4::from_translation(self.ball.position),
+                model_transform: Matrix4::from_translation(self.ball.position),
             },
         ]
     }
 
     pub fn get_model_transforms(&self) -> Vec<Matrix4<f32>> {
         vec![
-            Matrix4::<f32>::identity() + Matrix4::from_translation(self.left_paddle.position),
-            Matrix4::<f32>::identity() + Matrix4::from_translation(self.right_paddle.position),
-            Matrix4::<f32>::identity() + Matrix4::from_translation(self.top_wall.position),
-            Matrix4::<f32>::identity() + Matrix4::from_translation(self.bottom_wall.position),
-            Matrix4::<f32>::identity() + Matrix4::from_translation(self.ball.position),
+             Matrix4::from_translation(self.left_paddle.position),
+             Matrix4::from_translation(self.right_paddle.position),
+             Matrix4::from_translation(self.top_wall.position),
+             Matrix4::from_translation(self.bottom_wall.position),
+             Matrix4::from_translation(self.ball.position),
         ]
     }
 
