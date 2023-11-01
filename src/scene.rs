@@ -63,6 +63,8 @@ impl Scene {
                     y: 0.0,
                     z: 0.0,
                 },
+                1.0,
+                0.2,
                 color::RED,
             ),
             right_paddle: Paddle::new(
@@ -71,19 +73,29 @@ impl Scene {
                     y: 0.0,
                     z: 0.0,
                 },
+                1.0,
+                0.2,
                 color::BLUE,
             ),
-            top_wall: Wall::new(Vector3 {
-                x: 0.0,
-                y: -3.2,
-                z: 0.0,
-            }),
-            bottom_wall: Wall::new(Vector3 {
-                x: 0.0,
-                y: 3.2,
-                z: 0.0,
-            }),
-            ball: Ball::new(Vector3::zero(), color::GREEN),
+            top_wall: Wall::new(
+                Vector3 {
+                    x: 0.0,
+                    y: -3.2,
+                    z: 0.0,
+                },
+                0.2,
+                7.4,
+            ),
+            bottom_wall: Wall::new(
+                Vector3 {
+                    x: 0.0,
+                    y: 3.2,
+                    z: 0.0,
+                },
+                0.2,
+                7.4,
+            ),
+            ball: Ball::new(Vector3::zero(), 0.2, color::GREEN),
         }
     }
 
