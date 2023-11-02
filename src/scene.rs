@@ -160,12 +160,21 @@ impl Scene {
         }
 
         // simulate ball touching paddles
-        let is_touching_left_paddle = self.ball.position.x - (self.ball.side_length / 2.0) < self.left_paddle.position.x + (self.left_paddle.width / 2.0)
-            && self.ball.position.y + (self.ball.side_length / 2.0) > self.left_paddle.position.y - (self.left_paddle.height / 2.0)
-            && self.ball.position.y - (self.ball.side_length / 2.0) < self.left_paddle.position.y + (self.left_paddle.height / 2.0);
-        let is_touching_right_paddle = self.ball.position.x + (self.ball.side_length / 2.0) > self.right_paddle.position.x - (self.right_paddle.width / 2.0)
-            && self.ball.position.y + (self.ball.side_length / 2.0) > self.right_paddle.position.y - (self.right_paddle.height / 2.0)
-            && self.ball.position.y - (self.ball.side_length / 2.0) < self.right_paddle.position.y + (self.right_paddle.height / 2.0);
+        let hpw = self.left_paddle.width / 2.0; // Half paddle width. Both paddles have the same width.
+        let hph = self.left_paddle.height / 2.0; // Half paddle height. Both paddles have the same height.
+        let lpx = self.left_paddle.position.x; // Left paddle x position
+        let lpy = self.left_paddle.position.y; // Left paddle y position
+        let rpx = self.right_paddle.position.x; // Right paddle x position
+        let rpy = self.right_paddle.position.y; // Right paddle y position
+        let br = self.ball.side_length / 2.0; // Ball "radius"
+        let bpx = self.ball.position.x; // Ball x position
+        let bpy = self.ball.position.y; // Ball y position
+
+        // TODO: check that the ball is not behind the paddle
+        let is_touching_left_paddle =
+            bpx - br < lpx + hpw && bpy + br > lpy - hph && bpy - br < lpy + hph;
+        let is_touching_right_paddle =
+            bpx + br > rpx - hpw && bpy + br > rpy - hph && bpy - br < rpy + hph;
         let is_touching_paddles = is_touching_left_paddle || is_touching_right_paddle;
         if is_touching_paddles {
             self.ball.velocity.x *= -1.0;
@@ -191,7 +200,7 @@ impl Scene {
             Action::Kickoff => {
                 let mut rng = rand::thread_rng();
                 self.ball.velocity = Vector2 {
-                    x: -2.0,
+                    x: -4.0,
                     y: rng.gen_range(-1.0..1.0),
                 };
                 if rand::random() {
