@@ -89,8 +89,6 @@ pub fn create_surface(
     entry: &ash::Entry,
     instance: &ash::Instance,
     window: &winit::window::Window,
-    screen_width: u32,
-    screen_height: u32,
 ) -> SurfaceStuff {
     let surface = unsafe {
         platforms::create_surface(entry, instance, window).expect("Failed to create surface.")
@@ -100,8 +98,6 @@ pub fn create_surface(
     SurfaceStuff {
         surface_loader,
         surface,
-        screen_width,
-        screen_height,
     }
 }
 

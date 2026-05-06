@@ -159,8 +159,7 @@ impl GraphicsManager {
             VALIDATION.is_enable,
             &VALIDATION.required_validation_layers,
         );
-        let surface_stuff =
-            share::create_surface(&entry, &instance, &window, WINDOW_WIDTH, WINDOW_HEIGHT);
+        let surface_stuff = share::create_surface(&entry, &instance, &window);
         let (debug_utils_loader, debug_merssager) =
             debug::setup_debug_utils(VALIDATION.is_enable, &entry, &instance);
         let physical_device =
@@ -324,6 +323,7 @@ impl GraphicsManager {
         entries.into_iter().map(|(_, buffers)| buffers).collect()
     }
 
+    #[allow(dead_code)]
     pub fn unregister_model(&mut self, handle: ModelHandle) {
         if let Some(buffers) = self.model_buffers.remove(&handle) {
             unsafe {
@@ -498,8 +498,6 @@ impl GraphicsManager {
         let surface_suff = SurfaceStuff {
             surface_loader: self.surface_loader.clone(),
             surface: self.surface,
-            screen_width: WINDOW_WIDTH,
-            screen_height: WINDOW_HEIGHT,
         };
         // ------------------------
 

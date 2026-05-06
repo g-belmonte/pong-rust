@@ -108,85 +108,95 @@ impl Scene {
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        // FIXME: this whole thing is buggy.
-        // Sometimes the ball will penetrate a bit in the paddle and get stuck
-        // Might even pierce its way through, given enough time
-
         // NOTE: positive Y is downwards, so upper_boundary < lower_boundary
-
-        // geometry
         let upper_boundary = self.top_wall.position.y + (self.top_wall.height / 2.0);
-        let lower_boundary = self.bottom_wall.position.y - (self.top_wall.height / 2.0);
-        let hpw = self.left_paddle.width / 2.0; // Half paddle width. Both paddles have the same width.
-        let hph = self.left_paddle.height / 2.0; // Half paddle height. Both paddles have the same height.
-        let lpx = self.left_paddle.position.x; // Left paddle x position
-        let lpy = self.left_paddle.position.y; // Left paddle y position
-        let rpx = self.right_paddle.position.x; // Right paddle x position
-        let rpy = self.right_paddle.position.y; // Right paddle y position
-        let br = self.ball.side_length / 2.0; // Ball "radius"
-        let bpx = self.ball.position.x; // Ball x position
-        let bpy = self.ball.position.y; // Ball y position
+        let lower_boundary = self.bottom_wall.position.y - (self.bottom_wall.height / 2.0);
+        let hpw = self.left_paddle.width / 2.0;
+        let hph = self.left_paddle.height / 2.0;
+        let br = self.ball.side_length / 2.0;
 
-        // CONTACT OF PADDLES AND WALLS
-        // UPDATES PADDLE POSITION
-        // Simulates paddles touching the walls by limiting the max and min values for the Y component of the paddle's position
+        // Paddle position is clamped against the inner wall surfaces.
         self.left_paddle.position.y = clamp(
-            lpy + (delta_time * self.left_paddle.velocity),
+            self.left_paddle.position.y + delta_time * self.left_paddle.velocity,
             upper_boundary + hph,
             lower_boundary - hph,
         );
         self.right_paddle.position.y = clamp(
-            self.right_paddle.position.y + (delta_time * self.right_paddle.velocity),
+            self.right_paddle.position.y + delta_time * self.right_paddle.velocity,
             upper_boundary + hph,
             lower_boundary - hph,
         );
 
-        // CONTACT OF BALL AND OTHER OBJECTS
-        // UPDATES BALL VELOCITY
-        // Vertical contact - inverts Y component of velocity
-        let is_touching_walls = self.ball.position.y + (self.ball.side_length / 2.0)
-            > lower_boundary
-            || self.ball.position.y - (self.ball.side_length / 2.0) < upper_boundary;
+        // Substep so one fast tick cannot carry the ball clear through a paddle.
+        let speed =
+            (self.ball.velocity.x.powi(2) + self.ball.velocity.y.powi(2)).sqrt();
+        let travel = speed * delta_time;
+        let n = if travel > 0.0 {
+            ((travel / self.left_paddle.width).ceil() as u32).max(1)
+        } else {
+            1
+        };
+        let sub_dt = delta_time / n as f32;
 
-        let is_touching_top_of_left_paddle = false; // unimplemented
-        let is_touching_top_of_right_paddle = false; // unimplemented
+        for _ in 0..n {
+            let mut new_x = self.ball.position.x + sub_dt * self.ball.velocity.x;
+            let mut new_y = self.ball.position.y + sub_dt * self.ball.velocity.y;
 
-        let is_touching_bottom_of_left_paddle = false; // unimplemented
-        let is_touching_bottom_of_right_paddle = false; // unimplemented
+            // Walls.
+            if new_y - br < upper_boundary {
+                new_y = upper_boundary + br;
+                if self.ball.velocity.y < 0.0 {
+                    self.ball.velocity.y = -self.ball.velocity.y;
+                }
+            } else if new_y + br > lower_boundary {
+                new_y = lower_boundary - br;
+                if self.ball.velocity.y > 0.0 {
+                    self.ball.velocity.y = -self.ball.velocity.y;
+                }
+            }
 
-        let is_touching_bottom_or_top_of_paddles =
-            is_touching_bottom_of_left_paddle ||
-            is_touching_bottom_of_right_paddle ||
-            is_touching_top_of_left_paddle ||
-            is_touching_top_of_right_paddle;
+            // Paddles. Reflect on the axis with the smaller penetration depth —
+            // that's the face the ball just crossed. Only flip velocity when it
+            // points into the paddle, otherwise repeated frames would buzz.
+            for paddle in [&self.left_paddle, &self.right_paddle] {
+                let px = paddle.position.x;
+                let py = paddle.position.y;
+                let overlap_x =
+                    (new_x + br).min(px + hpw) - (new_x - br).max(px - hpw);
+                let overlap_y =
+                    (new_y + br).min(py + hph) - (new_y - br).max(py - hph);
+                if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                    continue;
+                }
+                if overlap_x < overlap_y {
+                    if new_x < px {
+                        new_x -= overlap_x;
+                        if self.ball.velocity.x > 0.0 {
+                            self.ball.velocity.x = -self.ball.velocity.x;
+                        }
+                    } else {
+                        new_x += overlap_x;
+                        if self.ball.velocity.x < 0.0 {
+                            self.ball.velocity.x = -self.ball.velocity.x;
+                        }
+                    }
+                } else if new_y < py {
+                    new_y -= overlap_y;
+                    if self.ball.velocity.y > 0.0 {
+                        self.ball.velocity.y = -self.ball.velocity.y;
+                    }
+                } else {
+                    new_y += overlap_y;
+                    if self.ball.velocity.y < 0.0 {
+                        self.ball.velocity.y = -self.ball.velocity.y;
+                    }
+                }
+                break;
+            }
 
-        let is_vertical_contact =
-            is_touching_walls || is_touching_bottom_or_top_of_paddles;
-        if is_vertical_contact {
-            self.ball.velocity.y *= -1.0;
+            self.ball.position.x = new_x;
+            self.ball.position.y = new_y;
         }
-
-        // Horizontal contact - inverts X component of velocity
-        let is_ball_touching_right_face_of_left_paddle =
-            bpx - br < lpx + hpw && // ball touches the right face of the left paddle
-            bpy + br > lpy - hph && // ball is under the top of the left paddle
-            bpy - br < lpy + hph; // ball is over the bottom of the left paddle
-        let is_ball_touching_left_face_of_right_paddle =
-            bpx + br > rpx - hpw && // ball touches the left face of the right paddle
-            bpy + br > rpy - hph && // ball is under the top of the right paddle
-            bpy - br < rpy + hph;   // ball is over the bottom of the right paddle
-
-        // NOTE: Ignore case where ball touches behind the paddle, per the game mechanics this would be impossible
-
-        let is_horizontal_contact =
-            is_ball_touching_right_face_of_left_paddle || is_ball_touching_left_face_of_right_paddle;
-        if is_horizontal_contact {
-            self.ball.velocity.x *= -1.0;
-        }
-
-        // Update position
-        self.ball.position.x += delta_time * self.ball.velocity.x;
-        self.ball.position.y += delta_time * self.ball.velocity.y;
     }
 
     pub fn game_over(&self) -> bool {

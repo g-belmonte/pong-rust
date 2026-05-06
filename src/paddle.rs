@@ -4,7 +4,6 @@ use crate::graphics_manager::structures::{ModelMesh, Vertex};
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 
 pub struct Paddle {
-    pub model_mesh: ModelMesh,
     pub model_handle: ModelHandle,
     pub position: Vector3<f32>,
     pub velocity: f32,
@@ -26,7 +25,6 @@ impl Paddle {
         };
         let model_handle = gm.register_model(&model_mesh);
         Self {
-            model_mesh,
             model_handle,
             position,
             velocity: 0.0,

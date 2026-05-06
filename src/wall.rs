@@ -4,11 +4,9 @@ use crate::graphics_manager::structures::{ModelMesh, Vertex};
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 
 pub struct Wall {
-    pub model_mesh: ModelMesh,
     pub model_handle: ModelHandle,
     pub position: Vector3<f32>,
     pub height: f32,
-    pub width: f32,
 }
 
 impl Wall {
@@ -24,11 +22,9 @@ impl Wall {
         };
         let model_handle = gm.register_model(&model_mesh);
         Self {
-            model_mesh,
             model_handle,
             position,
             height,
-            width,
         }
     }
 

@@ -4,7 +4,6 @@ use crate::graphics_manager::structures::{ModelMesh, Vertex};
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 
 pub struct Ball {
-    pub model_mesh: ModelMesh,
     pub model_handle: ModelHandle,
     pub position: Vector3<f32>,
     pub velocity: Vector2<f32>,
@@ -24,7 +23,6 @@ impl Ball {
         };
         let model_handle = gm.register_model(&model_mesh);
         Self {
-            model_mesh,
             model_handle,
             position,
             velocity: Vector2 { x: 0.0, y: 0.0 },
