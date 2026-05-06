@@ -55,8 +55,8 @@ pub struct SyncObjects {
 
 #[derive(Clone)]
 pub struct ModelMesh {
-    pub vertices: [Vertex; 4],
-    pub indices: [u32; 6],
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
 }
 
 #[repr(C)]

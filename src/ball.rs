@@ -2,8 +2,6 @@ use cgmath::{Vector2, Vector3};
 
 use crate::graphics_manager::structures::{ModelMesh, Vertex};
 
-const INDICES_DATA: [u32; 6] = [0, 1, 2, 2, 3, 0];
-
 pub struct Ball {
     pub model_mesh: ModelMesh,
     pub position: Vector3<f32>,
@@ -16,7 +14,7 @@ impl Ball {
         Self {
             model_mesh: ModelMesh {
                 vertices: Ball::vertices(side_length, color),
-                indices: INDICES_DATA,
+                indices: vec![0u32, 1, 2, 2, 3, 0],
             },
             position,
             velocity: Vector2 { x: 0.0, y: 0.0 },
@@ -24,10 +22,10 @@ impl Ball {
         }
     }
 
-    fn vertices(side_length: f32, color: [f32; 3]) -> [Vertex; 4] {
+    fn vertices(side_length: f32, color: [f32; 3]) -> Vec<Vertex> {
         let radius = side_length / 2.0;
 
-        [
+        vec![
             Vertex {
                 pos: [-radius, -radius],
                 color,
