@@ -9,6 +9,8 @@ pub mod window;
 
 use cgmath::Deg;
 use cgmath::Matrix4;
+use cgmath::Point3;
+use cgmath::Vector3;
 use constants::*;
 use structures::{QueueFamilyIndices, SurfaceStuff};
 
@@ -16,11 +18,13 @@ use ash::version::DeviceV1_0;
 use ash::version::InstanceV1_0;
 use ash::vk;
 
+use std::collections::HashMap;
 use std::ptr;
 
-use crate::scene::Scene;
+use self::structures::{ModelMesh, UniformBufferObject};
 
-use self::structures::UniformBufferObject;
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct ModelHandle(u32);
 
 pub struct ModelBuffers {
     vertex_buffer: vk::Buffer,
@@ -37,6 +41,65 @@ pub struct ModelBuffers {
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
+fn build_model_buffers(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    mesh: &ModelMesh,
+    swapchain_image_count: usize,
+    ubo_layout: vk::DescriptorSetLayout,
+) -> ModelBuffers {
+    let (vertex_buffer, vertex_buffer_memory) =
+        share::create_vertex_buffer(device, mem_props, command_pool, queue, &mesh.vertices);
+    let (index_buffer, index_buffer_memory) =
+        share::create_index_buffer(device, mem_props, command_pool, queue, &mesh.indices);
+    let (uniform_buffers, uniform_buffers_memory) =
+        share::create_uniform_buffers(device, mem_props, swapchain_image_count);
+    let descriptor_pool = share::create_descriptor_pool(device, swapchain_image_count);
+    let descriptor_sets = share::create_descriptor_sets(
+        device,
+        descriptor_pool,
+        ubo_layout,
+        &uniform_buffers,
+        swapchain_image_count,
+    );
+
+    ModelBuffers {
+        vertex_buffer,
+        vertex_buffer_memory,
+        index_buffer,
+        index_buffer_memory,
+        index_count: mesh.indices.len() as u32,
+        uniform_transform: UniformBufferObject {
+            model: Matrix4::from_scale(1.0),
+            view: Matrix4::from_scale(1.0),
+            proj: Matrix4::from_scale(1.0),
+        },
+        uniform_buffers,
+        uniform_buffers_memory,
+        descriptor_pool,
+        descriptor_sets,
+    }
+}
+
+fn destroy_model_buffers(device: &ash::Device, buffers: &ModelBuffers) {
+    unsafe {
+        device.destroy_descriptor_pool(buffers.descriptor_pool, None);
+
+        for i in 0..buffers.uniform_buffers.len() {
+            device.destroy_buffer(buffers.uniform_buffers[i], None);
+            device.free_memory(buffers.uniform_buffers_memory[i], None);
+        }
+
+        device.destroy_buffer(buffers.index_buffer, None);
+        device.free_memory(buffers.index_buffer_memory, None);
+
+        device.destroy_buffer(buffers.vertex_buffer, None);
+        device.free_memory(buffers.vertex_buffer_memory, None);
+    }
+}
+
 pub struct GraphicsManager {
     window: winit::window::Window,
 
@@ -48,6 +111,7 @@ pub struct GraphicsManager {
     debug_merssager: vk::DebugUtilsMessengerEXT,
 
     physical_device: vk::PhysicalDevice,
+    physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     device: ash::Device,
 
     queue_family: QueueFamilyIndices,
@@ -67,7 +131,11 @@ pub struct GraphicsManager {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
 
-    model_buffers: Vec<ModelBuffers>,
+    model_buffers: HashMap<ModelHandle, ModelBuffers>,
+    next_handle: u32,
+    command_buffers_dirty: bool,
+    current_view: Matrix4<f32>,
+    current_proj: Matrix4<f32>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -81,7 +149,7 @@ pub struct GraphicsManager {
 }
 
 impl GraphicsManager {
-    pub fn new(event_loop: &winit::event_loop::EventLoop<()>, scene: &Scene) -> GraphicsManager {
+    pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> GraphicsManager {
         let window = window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = ash::Entry::new().unwrap();
@@ -139,68 +207,27 @@ impl GraphicsManager {
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
 
-        let model_data = scene.get_model_data();
-        let model_buffers: Vec<ModelBuffers> = model_data
-            .iter()
-            .map(|md| {
-                let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
-                    &device,
-                    &physical_device_memory_properties,
-                    command_pool,
-                    graphics_queue,
-                    &md.model_mesh.vertices,
-                );
-                let (index_buffer, index_buffer_memory) = share::create_index_buffer(
-                    &device,
-                    &physical_device_memory_properties,
-                    command_pool,
-                    graphics_queue,
-                    &md.model_mesh.indices,
-                );
-                let (uniform_buffers, uniform_buffers_memory) = share::create_uniform_buffers(
-                    &device,
-                    &physical_device_memory_properties,
-                    swapchain_stuff.swapchain_images.len(),
-                );
-                let descriptor_pool =
-                    share::create_descriptor_pool(&device, swapchain_stuff.swapchain_images.len());
-                let descriptor_sets = share::create_descriptor_sets(
-                    &device,
-                    descriptor_pool,
-                    ubo_layout,
-                    &uniform_buffers,
-                    swapchain_stuff.swapchain_images.len(),
-                );
-
-                ModelBuffers {
-                    vertex_buffer,
-                    vertex_buffer_memory,
-                    index_buffer,
-                    index_buffer_memory,
-                    index_count: md.model_mesh.indices.len() as u32,
-                    uniform_transform: UniformBufferObject {
-                        model: md.model_transform,
-                        view: scene.camera.view,
-                        proj: scene.camera.proj,
-                    },
-                    uniform_buffers,
-                    uniform_buffers_memory,
-                    descriptor_pool,
-                    descriptor_sets,
-                }
-            })
-            .collect();
-
-        let command_buffers = share::create_command_buffers(
-            &device,
-            command_pool,
-            graphics_pipeline,
-            &swapchain_framebuffers,
-            render_pass,
-            swapchain_stuff.swapchain_extent,
-            pipeline_layout,
-            &model_buffers,
+        // Camera lives in the renderer now. View/proj are hardcoded; projection is recomputed
+        // on swapchain recreation. Models are registered by Scene after `new()` returns.
+        let current_view = Matrix4::look_at(
+            Point3::new(0.0, 0.0, 10.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
         );
+        let current_proj = cgmath::perspective(
+            Deg(45.0),
+            swapchain_stuff.swapchain_extent.width as f32
+                / swapchain_stuff.swapchain_extent.height as f32,
+            0.1,
+            10.0,
+        );
+
+        let model_buffers: HashMap<ModelHandle, ModelBuffers> = HashMap::new();
+        let next_handle: u32 = 0;
+
+        // Command buffers are built on the first draw_frame via the dirty flag — Scene hasn't
+        // registered any models yet, so there's nothing meaningful to record here.
+        let command_buffers: Vec<vk::CommandBuffer> = Vec::new();
         let sync_ojbects = share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
         GraphicsManager {
@@ -214,6 +241,7 @@ impl GraphicsManager {
             debug_merssager,
 
             physical_device,
+            physical_device_memory_properties,
             device,
 
             queue_family,
@@ -234,6 +262,10 @@ impl GraphicsManager {
             ubo_layout,
 
             model_buffers,
+            next_handle,
+            command_buffers_dirty: true,
+            current_view,
+            current_proj,
 
             command_pool,
             command_buffers,
@@ -259,7 +291,79 @@ impl GraphicsManager {
         };
     }
 
-    pub fn draw_frame(&mut self, transforms: Vec<Matrix4<f32>>) {
+    pub fn register_model(&mut self, mesh: &ModelMesh) -> ModelHandle {
+        let handle = ModelHandle(self.next_handle);
+        self.next_handle += 1;
+        let mut buffers = build_model_buffers(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            mesh,
+            self.swapchain_images.len(),
+            self.ubo_layout,
+        );
+        // seed the UBO with the camera matrices captured at init.
+        // model matrix gets overwritten on the first draw_frame call.
+        buffers.uniform_transform = UniformBufferObject {
+            model: Matrix4::from_scale(1.0),
+            view: self.current_view,
+            proj: self.current_proj,
+        };
+        self.model_buffers.insert(handle, buffers);
+        self.command_buffers_dirty = true;
+        handle
+    }
+
+    // Sorted by ModelHandle ordinal so registration order = draw order.
+    // The render pass has no depth attachment and the pipeline has no alpha blending,
+    // so overdraw correctness depends on this stable order — do not switch to a HashSet.
+    fn sorted_model_buffers(&self) -> Vec<&ModelBuffers> {
+        let mut entries: Vec<_> = self.model_buffers.iter().collect();
+        entries.sort_by_key(|(handle, _)| **handle);
+        entries.into_iter().map(|(_, buffers)| buffers).collect()
+    }
+
+    pub fn unregister_model(&mut self, handle: ModelHandle) {
+        if let Some(buffers) = self.model_buffers.remove(&handle) {
+            unsafe {
+                self.device
+                    .device_wait_idle()
+                    .expect("device_wait_idle failed in unregister_model");
+            }
+            destroy_model_buffers(&self.device, &buffers);
+            self.command_buffers_dirty = true;
+        }
+    }
+
+    fn rebuild_command_buffers(&mut self) {
+        unsafe {
+            self.device
+                .device_wait_idle()
+                .expect("device_wait_idle failed in rebuild_command_buffers");
+        }
+        unsafe {
+            self.device
+                .free_command_buffers(self.command_pool, &self.command_buffers);
+        }
+        self.command_buffers = share::create_command_buffers(
+            &self.device,
+            self.command_pool,
+            self.graphics_pipeline,
+            &self.swapchain_framebuffers,
+            self.render_pass,
+            self.swapchain_extent,
+            self.pipeline_layout,
+            &self.sorted_model_buffers(),
+        );
+        self.command_buffers_dirty = false;
+    }
+
+    pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
+        if self.command_buffers_dirty {
+            self.rebuild_command_buffers();
+        }
+
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
@@ -352,9 +456,20 @@ impl GraphicsManager {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    fn update_uniform_buffer(&mut self, current_image: usize, transforms: Vec<Matrix4<f32>>) {
-        for (i, buffers) in self.model_buffers.iter_mut().enumerate() {
-            buffers.uniform_transform.model = transforms[i];
+    // A registered model whose handle is missing from `transforms` keeps last frame's UBO
+    // (lets a caller skip an update). A handle in `transforms` that isn't registered is a
+    // programming error → panic.
+    fn update_uniform_buffer(
+        &mut self,
+        current_image: usize,
+        transforms: &[(ModelHandle, Matrix4<f32>)],
+    ) {
+        for (handle, transform) in transforms {
+            let buffers = self
+                .model_buffers
+                .get_mut(handle)
+                .expect("draw_frame received transform for unknown ModelHandle");
+            buffers.uniform_transform.model = *transform;
             let ubos = [buffers.uniform_transform];
             let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
 
@@ -410,16 +525,17 @@ impl GraphicsManager {
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
         // update camera aspect ratio
-        for buffers in self.model_buffers.iter_mut() {
+        self.current_proj = cgmath::perspective(
+            Deg(45.0),
+            self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
+            0.1,
+            10.0,
+        );
+        for buffers in self.model_buffers.values_mut() {
             buffers.uniform_transform = UniformBufferObject {
                 model: buffers.uniform_transform.model,
                 view: buffers.uniform_transform.view,
-                proj: cgmath::perspective(
-                    Deg(45.0),
-                    self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
-                    0.1,
-                    10.0,
-                ),
+                proj: self.current_proj,
             }
         }
 
@@ -441,16 +557,7 @@ impl GraphicsManager {
             &self.swapchain_imageviews,
             self.swapchain_extent,
         );
-        self.command_buffers = share::create_command_buffers(
-            &self.device,
-            self.command_pool,
-            self.graphics_pipeline,
-            &self.swapchain_framebuffers,
-            self.render_pass,
-            self.swapchain_extent,
-            pipeline_layout,
-            &self.model_buffers,
-        );
+        self.rebuild_command_buffers();
     }
 
     fn cleanup_swapchain(&self) {
@@ -486,21 +593,8 @@ impl Drop for GraphicsManager {
 
             self.cleanup_swapchain();
 
-            for buffers in self.model_buffers.iter() {
-                self.device
-                    .destroy_descriptor_pool(buffers.descriptor_pool, None);
-
-                for i in 0..buffers.uniform_buffers.len() {
-                    self.device.destroy_buffer(buffers.uniform_buffers[i], None);
-                    self.device
-                        .free_memory(buffers.uniform_buffers_memory[i], None);
-                }
-
-                self.device.destroy_buffer(buffers.index_buffer, None);
-                self.device.free_memory(buffers.index_buffer_memory, None);
-
-                self.device.destroy_buffer(buffers.vertex_buffer, None);
-                self.device.free_memory(buffers.vertex_buffer_memory, None);
+            for buffers in self.model_buffers.values() {
+                destroy_model_buffers(&self.device, buffers);
             }
 
             self.device

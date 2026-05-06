@@ -758,7 +758,7 @@ pub fn create_command_buffers(
     render_pass: vk::RenderPass,
     surface_extent: vk::Extent2D,
     pipeline_layout: vk::PipelineLayout,
-    model_buffers: &Vec<ModelBuffers>,
+    model_buffers: &[&ModelBuffers],
 ) -> Vec<vk::CommandBuffer> {
     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -819,7 +819,7 @@ pub fn create_command_buffers(
                 graphics_pipeline,
             );
 
-            for buffers in model_buffers {
+            for &buffers in model_buffers.iter() {
                 let vertex_buffers = [buffers.vertex_buffer];
                 let offsets = [0_u64];
                 let descriptor_sets_to_bind = [buffers.descriptor_sets[i]];

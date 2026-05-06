@@ -1,5 +1,4 @@
 mod ball;
-mod camera;
 mod graphics_manager;
 mod paddle;
 mod scene;
@@ -70,7 +69,7 @@ impl PongRust {
                 }
                 self.scene.update(delta_time);
                 let transforms = self.scene.get_model_transforms();
-                self.graphics_manager.draw_frame(transforms);
+                self.graphics_manager.draw_frame(&transforms);
 
                 if IS_PAINT_FPS_COUNTER {
                     print!("FPS: {}\r", tick_counter.fps());
@@ -139,8 +138,8 @@ impl PongRust {
 
 fn main() {
     let event_loop = EventLoop::new();
-    let scene = Scene::new();
-    let graphics_manager = GraphicsManager::new(&event_loop, &scene);
+    let mut graphics_manager = GraphicsManager::new(&event_loop);
+    let scene = Scene::new(&mut graphics_manager);
     let pong_rust = PongRust {
         graphics_manager,
         scene,
