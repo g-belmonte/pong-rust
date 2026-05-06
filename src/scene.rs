@@ -3,9 +3,12 @@ use num::clamp;
 use rand::Rng;
 
 use crate::ball::Ball;
+use crate::digit::Digit;
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 use crate::paddle::Paddle;
 use crate::wall::Wall;
+
+pub const WINNING_SCORE: u8 = 9;
 
 pub struct Scene {
     pub left_paddle: Paddle,
@@ -13,6 +16,10 @@ pub struct Scene {
     pub top_wall: Wall,
     pub bottom_wall: Wall,
     pub ball: Ball,
+    pub left_digit: Digit,
+    pub right_digit: Digit,
+    pub left_score: u8,
+    pub right_score: u8,
 }
 
 mod color {
@@ -30,6 +37,7 @@ pub enum Action {
     RightPaddleStop,
     Kickoff,
     GameOver,
+    ResetRound,
     ResetGame,
 }
 
@@ -79,11 +87,31 @@ impl Scene {
                 10.0,
             ),
             ball: Ball::new(gm, Vector3::zero(), 0.2, color::GREEN),
+            left_digit: Digit::new(
+                gm,
+                Vector3 {
+                    x: -1.0,
+                    y: -3.7,
+                    z: 0.0,
+                },
+                0.4,
+            ),
+            right_digit: Digit::new(
+                gm,
+                Vector3 {
+                    x: 1.0,
+                    y: -3.7,
+                    z: 0.0,
+                },
+                0.4,
+            ),
+            left_score: 0,
+            right_score: 0,
         }
     }
 
     pub fn get_model_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
-        vec![
+        let mut transforms = vec![
             (
                 self.left_paddle.model_handle,
                 Matrix4::from_translation(self.left_paddle.position),
@@ -104,7 +132,10 @@ impl Scene {
                 self.ball.model_handle,
                 Matrix4::from_translation(self.ball.position),
             ),
-        ]
+        ];
+        transforms.extend(self.left_digit.get_model_transforms());
+        transforms.extend(self.right_digit.get_model_transforms());
+        transforms
     }
 
     pub fn update(&mut self, delta_time: f32) {
@@ -203,6 +234,10 @@ impl Scene {
         self.ball.position.x > 4.7 || self.ball.position.x < -4.7
     }
 
+    pub fn match_over(&self) -> bool {
+        self.left_score >= WINNING_SCORE || self.right_score >= WINNING_SCORE
+    }
+
     pub fn handle_action(&mut self, action: Action) {
         match action {
             // positive y is downwards
@@ -223,15 +258,32 @@ impl Scene {
                 }
             }
             Action::GameOver => {
+                if self.ball.position.x > 4.7 {
+                    self.left_score += 1;
+                    self.left_digit.set_value(self.left_score);
+                } else if self.ball.position.x < -4.7 {
+                    self.right_score += 1;
+                    self.right_digit.set_value(self.right_score);
+                }
                 self.ball.velocity = cgmath::vec2(0.0, 0.0);
                 self.left_paddle.velocity = 0.0;
                 self.right_paddle.velocity = 0.0;
+            }
+            Action::ResetRound => {
+                self.ball.position.x = 0.0;
+                self.ball.position.y = 0.0;
+                self.left_paddle.position.y = 0.0;
+                self.right_paddle.position.y = 0.0;
             }
             Action::ResetGame => {
                 self.ball.position.x = 0.0;
                 self.ball.position.y = 0.0;
                 self.left_paddle.position.y = 0.0;
                 self.right_paddle.position.y = 0.0;
+                self.left_score = 0;
+                self.right_score = 0;
+                self.left_digit.set_value(0);
+                self.right_digit.set_value(0);
             }
         }
     }

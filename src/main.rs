@@ -1,4 +1,5 @@
 mod ball;
+mod digit;
 mod graphics_manager;
 mod paddle;
 mod scene;
@@ -63,9 +64,14 @@ impl PongRust {
             }
             Event::RedrawRequested(_window_id) => {
                 let delta_time = tick_counter.delta_time();
-                if self.scene.game_over() {
+                if self.game_phase == GamePhase::Playing && self.scene.game_over() {
                     self.scene.handle_action(scene::Action::GameOver);
-                    self.game_phase = GamePhase::End;
+                    if self.scene.match_over() {
+                        self.game_phase = GamePhase::End;
+                    } else {
+                        self.scene.handle_action(scene::Action::ResetRound);
+                        self.game_phase = GamePhase::Start;
+                    }
                 }
                 self.scene.update(delta_time);
                 let transforms = self.scene.get_model_transforms();
