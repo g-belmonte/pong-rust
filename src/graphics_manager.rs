@@ -33,12 +33,10 @@ pub struct ModelBuffers {
     index_buffer_memory: vk::DeviceMemory,
     index_count: u32,
 
-    uniform_transform: UniformBufferObject,
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memory: Vec<vk::DeviceMemory>,
-
-    descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    // Last model matrix supplied via draw_frame's transforms slice. Preserves the
+    // documented behaviour: a registered handle missing from `transforms` redraws
+    // with whatever it was last given (identity at registration).
+    last_model: Matrix4<f32>,
 }
 
 fn build_model_buffers(
@@ -47,23 +45,11 @@ fn build_model_buffers(
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     mesh: &ModelMesh,
-    swapchain_image_count: usize,
-    ubo_layout: vk::DescriptorSetLayout,
 ) -> ModelBuffers {
     let (vertex_buffer, vertex_buffer_memory) =
         share::create_vertex_buffer(device, mem_props, command_pool, queue, &mesh.vertices);
     let (index_buffer, index_buffer_memory) =
         share::create_index_buffer(device, mem_props, command_pool, queue, &mesh.indices);
-    let (uniform_buffers, uniform_buffers_memory) =
-        share::create_uniform_buffers(device, mem_props, swapchain_image_count);
-    let descriptor_pool = share::create_descriptor_pool(device, swapchain_image_count);
-    let descriptor_sets = share::create_descriptor_sets(
-        device,
-        descriptor_pool,
-        ubo_layout,
-        &uniform_buffers,
-        swapchain_image_count,
-    );
 
     ModelBuffers {
         vertex_buffer,
@@ -71,32 +57,36 @@ fn build_model_buffers(
         index_buffer,
         index_buffer_memory,
         index_count: mesh.indices.len() as u32,
-        uniform_transform: UniformBufferObject {
-            model: Matrix4::from_scale(1.0),
-            view: Matrix4::from_scale(1.0),
-            proj: Matrix4::from_scale(1.0),
-        },
-        uniform_buffers,
-        uniform_buffers_memory,
-        descriptor_pool,
-        descriptor_sets,
+        last_model: Matrix4::from_scale(1.0),
     }
 }
 
 fn destroy_model_buffers(device: &ash::Device, buffers: &ModelBuffers) {
     unsafe {
-        device.destroy_descriptor_pool(buffers.descriptor_pool, None);
-
-        for i in 0..buffers.uniform_buffers.len() {
-            device.destroy_buffer(buffers.uniform_buffers[i], None);
-            device.free_memory(buffers.uniform_buffers_memory[i], None);
-        }
-
         device.destroy_buffer(buffers.index_buffer, None);
         device.free_memory(buffers.index_buffer_memory, None);
 
         device.destroy_buffer(buffers.vertex_buffer, None);
         device.free_memory(buffers.vertex_buffer_memory, None);
+    }
+}
+
+fn write_camera_ubos(
+    device: &ash::Device,
+    memories: &[vk::DeviceMemory],
+    view: Matrix4<f32>,
+    proj: Matrix4<f32>,
+) {
+    let ubo = UniformBufferObject { view, proj };
+    let buffer_size = ::std::mem::size_of::<UniformBufferObject>() as u64;
+    for &memory in memories {
+        unsafe {
+            let data_ptr = device
+                .map_memory(memory, 0, buffer_size, vk::MemoryMapFlags::empty())
+                .expect("Failed to Map Memory") as *mut UniformBufferObject;
+            data_ptr.copy_from_nonoverlapping(&ubo, 1);
+            device.unmap_memory(memory);
+        }
     }
 }
 
@@ -131,13 +121,23 @@ pub struct GraphicsManager {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
 
+    // Camera UBO `(view, proj)` is shared across all models — one buffer per
+    // swapchain image, one descriptor set per swapchain image. Contents are
+    // rewritten only when the camera changes (init, swapchain recreation).
+    camera_uniform_buffers: Vec<vk::Buffer>,
+    camera_uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    descriptor_pool: vk::DescriptorPool,
+    camera_descriptor_sets: Vec<vk::DescriptorSet>,
+
     model_buffers: HashMap<ModelHandle, ModelBuffers>,
     next_handle: u32,
-    command_buffers_dirty: bool,
     current_view: Matrix4<f32>,
     current_proj: Matrix4<f32>,
 
     command_pool: vk::CommandPool,
+    // MAX_FRAMES_IN_FLIGHT command buffers, indexed by current_frame. Re-recorded each
+    // frame in draw_frame so the per-draw push-constant model matrix reflects the
+    // current Scene transforms.
     command_buffers: Vec<vk::CommandBuffer>,
 
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -221,12 +221,33 @@ impl GraphicsManager {
             10.0,
         );
 
+        let swapchain_image_count = swapchain_stuff.swapchain_images.len();
+        let (camera_uniform_buffers, camera_uniform_buffers_memory) = share::create_uniform_buffers(
+            &device,
+            &physical_device_memory_properties,
+            swapchain_image_count,
+        );
+        let descriptor_pool = share::create_descriptor_pool(&device, swapchain_image_count);
+        let camera_descriptor_sets = share::create_descriptor_sets(
+            &device,
+            descriptor_pool,
+            ubo_layout,
+            &camera_uniform_buffers,
+            swapchain_image_count,
+        );
+
+        write_camera_ubos(
+            &device,
+            &camera_uniform_buffers_memory,
+            current_view,
+            current_proj,
+        );
+
         let model_buffers: HashMap<ModelHandle, ModelBuffers> = HashMap::new();
         let next_handle: u32 = 0;
 
-        // Command buffers are built on the first draw_frame via the dirty flag — Scene hasn't
-        // registered any models yet, so there's nothing meaningful to record here.
-        let command_buffers: Vec<vk::CommandBuffer> = Vec::new();
+        let command_buffers =
+            share::allocate_command_buffers(&device, command_pool, MAX_FRAMES_IN_FLIGHT as u32);
         let sync_ojbects = share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
         GraphicsManager {
@@ -260,9 +281,13 @@ impl GraphicsManager {
             graphics_pipeline,
             ubo_layout,
 
+            camera_uniform_buffers,
+            camera_uniform_buffers_memory,
+            descriptor_pool,
+            camera_descriptor_sets,
+
             model_buffers,
             next_handle,
-            command_buffers_dirty: true,
             current_view,
             current_proj,
 
@@ -293,34 +318,15 @@ impl GraphicsManager {
     pub fn register_model(&mut self, mesh: &ModelMesh) -> ModelHandle {
         let handle = ModelHandle(self.next_handle);
         self.next_handle += 1;
-        let mut buffers = build_model_buffers(
+        let buffers = build_model_buffers(
             &self.device,
             &self.physical_device_memory_properties,
             self.command_pool,
             self.graphics_queue,
             mesh,
-            self.swapchain_images.len(),
-            self.ubo_layout,
         );
-        // seed the UBO with the camera matrices captured at init.
-        // model matrix gets overwritten on the first draw_frame call.
-        buffers.uniform_transform = UniformBufferObject {
-            model: Matrix4::from_scale(1.0),
-            view: self.current_view,
-            proj: self.current_proj,
-        };
         self.model_buffers.insert(handle, buffers);
-        self.command_buffers_dirty = true;
         handle
-    }
-
-    // Sorted by ModelHandle ordinal so registration order = draw order.
-    // The render pass has no depth attachment and the pipeline has no alpha blending,
-    // so overdraw correctness depends on this stable order — do not switch to a HashSet.
-    fn sorted_model_buffers(&self) -> Vec<&ModelBuffers> {
-        let mut entries: Vec<_> = self.model_buffers.iter().collect();
-        entries.sort_by_key(|(handle, _)| **handle);
-        entries.into_iter().map(|(_, buffers)| buffers).collect()
     }
 
     #[allow(dead_code)]
@@ -332,38 +338,10 @@ impl GraphicsManager {
                     .expect("device_wait_idle failed in unregister_model");
             }
             destroy_model_buffers(&self.device, &buffers);
-            self.command_buffers_dirty = true;
         }
-    }
-
-    fn rebuild_command_buffers(&mut self) {
-        unsafe {
-            self.device
-                .device_wait_idle()
-                .expect("device_wait_idle failed in rebuild_command_buffers");
-        }
-        unsafe {
-            self.device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
-        }
-        self.command_buffers = share::create_command_buffers(
-            &self.device,
-            self.command_pool,
-            self.graphics_pipeline,
-            &self.swapchain_framebuffers,
-            self.render_pass,
-            self.swapchain_extent,
-            self.pipeline_layout,
-            &self.sorted_model_buffers(),
-        );
-        self.command_buffers_dirty = false;
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
-        if self.command_buffers_dirty {
-            self.rebuild_command_buffers();
-        }
-
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
@@ -391,7 +369,43 @@ impl GraphicsManager {
             }
         };
 
-        self.update_uniform_buffer(image_index as usize, transforms);
+        // Update each touched model's last_model. Handles in transforms that aren't
+        // registered are a programming error → panic. Registered handles missing from
+        // transforms keep last frame's model matrix.
+        for (handle, transform) in transforms {
+            self.model_buffers
+                .get_mut(handle)
+                .expect("draw_frame received transform for unknown ModelHandle")
+                .last_model = *transform;
+        }
+
+        // Sorted by ModelHandle ordinal so registration order = draw order.
+        // The render pass has no depth attachment and the pipeline has no alpha
+        // blending, so overdraw correctness depends on this stable order.
+        let mut entries: Vec<_> = self.model_buffers.iter().collect();
+        entries.sort_by_key(|(handle, _)| **handle);
+        let draws: Vec<(&ModelBuffers, Matrix4<f32>)> = entries
+            .iter()
+            .map(|(_, buffers)| (*buffers, buffers.last_model))
+            .collect();
+
+        let command_buffer = self.command_buffers[self.current_frame];
+        unsafe {
+            self.device
+                .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
+                .expect("Failed to reset command buffer");
+        }
+        share::record_command_buffer(
+            &self.device,
+            command_buffer,
+            self.swapchain_framebuffers[image_index as usize],
+            self.render_pass,
+            self.swapchain_extent,
+            self.graphics_pipeline,
+            self.pipeline_layout,
+            self.camera_descriptor_sets[image_index as usize],
+            &draws,
+        );
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -404,7 +418,7 @@ impl GraphicsManager {
             p_wait_semaphores: wait_semaphores.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
             command_buffer_count: 1,
-            p_command_buffers: &self.command_buffers[image_index as usize],
+            p_command_buffers: &command_buffer,
             signal_semaphore_count: signal_semaphores.len() as u32,
             p_signal_semaphores: signal_semaphores.as_ptr(),
         }];
@@ -456,43 +470,6 @@ impl GraphicsManager {
         self.current_frame = (self.current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
-    // A registered model whose handle is missing from `transforms` keeps last frame's UBO
-    // (lets a caller skip an update). A handle in `transforms` that isn't registered is a
-    // programming error → panic.
-    fn update_uniform_buffer(
-        &mut self,
-        current_image: usize,
-        transforms: &[(ModelHandle, Matrix4<f32>)],
-    ) {
-        for (handle, transform) in transforms {
-            let buffers = self
-                .model_buffers
-                .get_mut(handle)
-                .expect("draw_frame received transform for unknown ModelHandle");
-            buffers.uniform_transform.model = *transform;
-            let ubos = [buffers.uniform_transform];
-            let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
-
-            unsafe {
-                let data_ptr = self
-                    .device
-                    .map_memory(
-                        buffers.uniform_buffers_memory[current_image],
-                        0,
-                        buffer_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .expect("Failed to Map Memory")
-                    as *mut UniformBufferObject;
-
-                data_ptr.copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
-
-                self.device
-                    .unmap_memory(buffers.uniform_buffers_memory[current_image]);
-            }
-        }
-    }
-
     fn recreate_swapchain(&mut self) {
         // parameters -------------
         let surface_suff = SurfaceStuff {
@@ -522,20 +499,19 @@ impl GraphicsManager {
         self.swapchain_format = swapchain_stuff.swapchain_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
-        // update camera aspect ratio
+        // Aspect ratio changed — push the new projection through the shared UBO.
         self.current_proj = cgmath::perspective(
             Deg(45.0),
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
             0.1,
             10.0,
         );
-        for buffers in self.model_buffers.values_mut() {
-            buffers.uniform_transform = UniformBufferObject {
-                model: buffers.uniform_transform.model,
-                view: buffers.uniform_transform.view,
-                proj: self.current_proj,
-            }
-        }
+        write_camera_ubos(
+            &self.device,
+            &self.camera_uniform_buffers_memory,
+            self.current_view,
+            self.current_proj,
+        );
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
@@ -555,13 +531,10 @@ impl GraphicsManager {
             &self.swapchain_imageviews,
             self.swapchain_extent,
         );
-        self.rebuild_command_buffers();
     }
 
     fn cleanup_swapchain(&self) {
         unsafe {
-            self.device
-                .free_command_buffers(self.command_pool, &self.command_buffers);
             for &framebuffer in self.swapchain_framebuffers.iter() {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
@@ -591,8 +564,20 @@ impl Drop for GraphicsManager {
 
             self.cleanup_swapchain();
 
+            self.device
+                .free_command_buffers(self.command_pool, &self.command_buffers);
+
             for buffers in self.model_buffers.values() {
                 destroy_model_buffers(&self.device, buffers);
+            }
+
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+            for i in 0..self.camera_uniform_buffers.len() {
+                self.device
+                    .destroy_buffer(self.camera_uniform_buffers[i], None);
+                self.device
+                    .free_memory(self.camera_uniform_buffers_memory[i], None);
             }
 
             self.device

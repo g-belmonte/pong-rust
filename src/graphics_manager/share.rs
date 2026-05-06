@@ -2,6 +2,7 @@ use ash::version::DeviceV1_0;
 use ash::version::EntryV1_0;
 use ash::version::InstanceV1_0;
 use ash::vk;
+use cgmath::Matrix4;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -735,7 +736,8 @@ pub fn create_command_pool(
     let command_pool_create_info = vk::CommandPoolCreateInfo {
         s_type: vk::StructureType::COMMAND_POOL_CREATE_INFO,
         p_next: ptr::null(),
-        flags: vk::CommandPoolCreateFlags::empty(),
+        // Per-frame re-recording resets individual buffers via vkResetCommandBuffer.
+        flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         queue_family_index: queue_families.graphics_family.unwrap(),
     };
 
@@ -746,108 +748,118 @@ pub fn create_command_pool(
     }
 }
 
-pub fn create_command_buffers(
+pub fn allocate_command_buffers(
     device: &ash::Device,
     command_pool: vk::CommandPool,
-    graphics_pipeline: vk::Pipeline,
-    framebuffers: &Vec<vk::Framebuffer>,
-    render_pass: vk::RenderPass,
-    surface_extent: vk::Extent2D,
-    pipeline_layout: vk::PipelineLayout,
-    model_buffers: &[&ModelBuffers],
+    count: u32,
 ) -> Vec<vk::CommandBuffer> {
     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
         p_next: ptr::null(),
-        command_buffer_count: framebuffers.len() as u32,
+        command_buffer_count: count,
         command_pool,
         level: vk::CommandBufferLevel::PRIMARY,
     };
 
-    let command_buffers = unsafe {
+    unsafe {
         device
             .allocate_command_buffers(&command_buffer_allocate_info)
             .expect("Failed to allocate Command Buffers!")
+    }
+}
+
+pub fn record_command_buffer(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    framebuffer: vk::Framebuffer,
+    render_pass: vk::RenderPass,
+    surface_extent: vk::Extent2D,
+    graphics_pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_set: vk::DescriptorSet,
+    draws: &[(&ModelBuffers, Matrix4<f32>)],
+) {
+    let begin_info = vk::CommandBufferBeginInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        p_inheritance_info: ptr::null(),
+        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
     };
 
-    for (i, &command_buffer) in command_buffers.iter().enumerate() {
-        let command_buffer_begin_info = vk::CommandBufferBeginInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-            p_next: ptr::null(),
-            p_inheritance_info: ptr::null(),
-            flags: vk::CommandBufferUsageFlags::SIMULTANEOUS_USE,
-        };
+    let clear_values = [vk::ClearValue {
+        color: vk::ClearColorValue {
+            float32: [0.0, 0.0, 0.0, 1.0],
+        },
+    }];
 
-        unsafe {
-            device
-                .begin_command_buffer(command_buffer, &command_buffer_begin_info)
-                .expect("Failed to begin recording Command Buffer!");
+    let render_pass_begin_info = vk::RenderPassBeginInfo {
+        s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
+        p_next: ptr::null(),
+        render_pass,
+        framebuffer,
+        render_area: vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: surface_extent,
+        },
+        clear_value_count: clear_values.len() as u32,
+        p_clear_values: clear_values.as_ptr(),
+    };
+
+    let descriptor_sets_to_bind = [descriptor_set];
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .expect("Failed to begin recording Command Buffer!");
+        device.cmd_begin_render_pass(
+            command_buffer,
+            &render_pass_begin_info,
+            vk::SubpassContents::INLINE,
+        );
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            graphics_pipeline,
+        );
+        device.cmd_bind_descriptor_sets(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline_layout,
+            0,
+            &descriptor_sets_to_bind,
+            &[],
+        );
+
+        for (buffers, model_matrix) in draws.iter() {
+            let vertex_buffers = [buffers.vertex_buffer];
+            let offsets = [0_u64];
+            device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+            device.cmd_bind_index_buffer(
+                command_buffer,
+                buffers.index_buffer,
+                0,
+                vk::IndexType::UINT32,
+            );
+            let model_bytes = ::std::slice::from_raw_parts(
+                model_matrix as *const Matrix4<f32> as *const u8,
+                ::std::mem::size_of::<Matrix4<f32>>(),
+            );
+            device.cmd_push_constants(
+                command_buffer,
+                pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                model_bytes,
+            );
+            device.cmd_draw_indexed(command_buffer, buffers.index_count, 1, 0, 0, 0);
         }
 
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
-            },
-        }];
+        device.cmd_end_render_pass(command_buffer);
 
-        let render_pass_begin_info = vk::RenderPassBeginInfo {
-            s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
-            p_next: ptr::null(),
-            render_pass,
-            framebuffer: framebuffers[i],
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D { x: 0, y: 0 },
-                extent: surface_extent,
-            },
-            clear_value_count: clear_values.len() as u32,
-            p_clear_values: clear_values.as_ptr(),
-        };
-
-        unsafe {
-            device.cmd_begin_render_pass(
-                command_buffer,
-                &render_pass_begin_info,
-                vk::SubpassContents::INLINE,
-            );
-            device.cmd_bind_pipeline(
-                command_buffer,
-                vk::PipelineBindPoint::GRAPHICS,
-                graphics_pipeline,
-            );
-
-            for &buffers in model_buffers.iter() {
-                let vertex_buffers = [buffers.vertex_buffer];
-                let offsets = [0_u64];
-                let descriptor_sets_to_bind = [buffers.descriptor_sets[i]];
-
-                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
-                device.cmd_bind_index_buffer(
-                    command_buffer,
-                    buffers.index_buffer,
-                    0,
-                    vk::IndexType::UINT32,
-                );
-                device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    pipeline_layout,
-                    0,
-                    &descriptor_sets_to_bind,
-                    &[],
-                );
-
-                device.cmd_draw_indexed(command_buffer, buffers.index_count, 1, 0, 0, 0);
-            }
-
-            device.cmd_end_render_pass(command_buffer);
-
-            device
-                .end_command_buffer(command_buffer)
-                .expect("Failed to record Command Buffer at Ending!");
-        }
+        device
+            .end_command_buffer(command_buffer)
+            .expect("Failed to record Command Buffer at Ending!");
     }
-
-    command_buffers
 }
 
 pub fn create_sync_objects(device: &ash::Device, max_frame_in_flight: usize) -> SyncObjects {
@@ -1354,14 +1366,21 @@ pub fn create_graphics_pipeline(
 
     let set_layouts = [ubo_set_layout];
 
+    // Per-draw model matrix lives in a push constant block (see main.vert).
+    let push_constant_ranges = [vk::PushConstantRange {
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        offset: 0,
+        size: ::std::mem::size_of::<Matrix4<f32>>() as u32,
+    }];
+
     let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineLayoutCreateFlags::empty(),
         set_layout_count: set_layouts.len() as u32,
         p_set_layouts: set_layouts.as_ptr(),
-        push_constant_range_count: 0,
-        p_push_constant_ranges: ptr::null(),
+        push_constant_range_count: push_constant_ranges.len() as u32,
+        p_push_constant_ranges: push_constant_ranges.as_ptr(),
     };
 
     let pipeline_layout = unsafe {
