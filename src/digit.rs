@@ -1,7 +1,7 @@
 use cgmath::{Matrix4, Vector3};
 
 use crate::graphics_manager::structures::{ModelMesh, Vertex};
-use crate::graphics_manager::{GraphicsManager, ModelHandle};
+use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
 
 // Segment order: [top, top-left, top-right, middle, bottom-left, bottom-right, bottom].
 #[rustfmt::skip]
@@ -28,6 +28,26 @@ const OFFSCREEN: Vector3<f32> = Vector3 {
     z: 0.0,
 };
 
+/// Two shared meshes — horizontal and vertical segments — registered once
+/// and reused as instances by every digit. Saves 12 buffer allocations
+/// (relative to the old per-segment registration) for two on-screen digits.
+pub struct DigitMeshes {
+    pub horizontal: MeshHandle,
+    pub vertical: MeshHandle,
+    pub segment_size: f32,
+}
+
+impl DigitMeshes {
+    pub fn register(gm: &mut GraphicsManager, segment_size: f32) -> Self {
+        let thickness = segment_size * 0.2;
+        Self {
+            horizontal: gm.register_mesh(&rect_mesh(segment_size, thickness)),
+            vertical: gm.register_mesh(&rect_mesh(thickness, segment_size)),
+            segment_size,
+        }
+    }
+}
+
 pub struct Digit {
     pub segments: [ModelHandle; 7],
     pub position: Vector3<f32>,
@@ -36,25 +56,23 @@ pub struct Digit {
 }
 
 impl Digit {
-    pub fn new(gm: &mut GraphicsManager, position: Vector3<f32>, segment_size: f32) -> Self {
-        let thickness = segment_size * 0.2;
-        let h_mesh = rect_mesh(segment_size, thickness);
-        let v_mesh = rect_mesh(thickness, segment_size);
-
+    pub fn new(gm: &mut GraphicsManager, meshes: &DigitMeshes, position: Vector3<f32>) -> Self {
+        let h = meshes.horizontal;
+        let v = meshes.vertical;
         let segments = [
-            gm.register_model(&h_mesh), // top
-            gm.register_model(&v_mesh), // top-left
-            gm.register_model(&v_mesh), // top-right
-            gm.register_model(&h_mesh), // middle
-            gm.register_model(&v_mesh), // bottom-left
-            gm.register_model(&v_mesh), // bottom-right
-            gm.register_model(&h_mesh), // bottom
+            gm.register_instance(h, COLOR), // top
+            gm.register_instance(v, COLOR), // top-left
+            gm.register_instance(v, COLOR), // top-right
+            gm.register_instance(h, COLOR), // middle
+            gm.register_instance(v, COLOR), // bottom-left
+            gm.register_instance(v, COLOR), // bottom-right
+            gm.register_instance(h, COLOR), // bottom
         ];
 
         Self {
             segments,
             position,
-            segment_size,
+            segment_size: meshes.segment_size,
             value: 0,
         }
     }
@@ -96,10 +114,10 @@ fn rect_mesh(width: f32, height: f32) -> ModelMesh {
     let hh = height / 2.0;
     ModelMesh {
         vertices: vec![
-            Vertex { pos: [-hw, -hh], color: COLOR },
-            Vertex { pos: [ hw, -hh], color: COLOR },
-            Vertex { pos: [ hw,  hh], color: COLOR },
-            Vertex { pos: [-hw,  hh], color: COLOR },
+            Vertex { pos: [-hw, -hh] },
+            Vertex { pos: [ hw, -hh] },
+            Vertex { pos: [ hw,  hh] },
+            Vertex { pos: [-hw,  hh] },
         ],
         indices: vec![0u32, 1, 2, 2, 3, 0],
     }

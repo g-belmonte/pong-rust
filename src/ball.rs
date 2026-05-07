@@ -1,6 +1,5 @@
-use cgmath::{Vector2, Vector3};
+use cgmath::{Matrix4, Vector2, Vector3};
 
-use crate::graphics_manager::structures::{TexturedModelMesh, TexturedVertex};
 use crate::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
 
 const BALL_TEXTURE_PNG: &[u8] = include_bytes!("../assets/tennis-ball.png");
@@ -20,11 +19,8 @@ impl Ball {
         side_length: f32,
     ) -> Self {
         let texture = gm.register_texture(BALL_TEXTURE_PNG);
-        let model_mesh = TexturedModelMesh {
-            vertices: Ball::vertices(side_length),
-            indices: vec![0u32, 1, 2, 2, 3, 0],
-        };
-        let model_handle = gm.register_textured_model_with(&model_mesh, texture);
+        // Whole texture maps onto the unit quad: uv goes 0..1 across both axes.
+        let model_handle = gm.register_textured_instance(texture, [0.0, 0.0], [1.0, 1.0]);
         Self {
             model_handle,
             _texture: texture,
@@ -34,26 +30,11 @@ impl Ball {
         }
     }
 
-    fn vertices(side_length: f32) -> Vec<TexturedVertex> {
-        let radius = side_length / 2.0;
-
-        vec![
-            TexturedVertex {
-                pos: [-radius, -radius],
-                uv: [0.0, 0.0],
-            },
-            TexturedVertex {
-                pos: [radius, -radius],
-                uv: [1.0, 0.0],
-            },
-            TexturedVertex {
-                pos: [radius, radius],
-                uv: [1.0, 1.0],
-            },
-            TexturedVertex {
-                pos: [-radius, radius],
-                uv: [0.0, 1.0],
-            },
-        ]
+    /// Per-frame model matrix. The unit quad lives in `[-0.5..0.5]^2`, so
+    /// scaling by `side_length` brings it to the ball's actual size; translation
+    /// places it in the world.
+    pub fn model_matrix(&self) -> Matrix4<f32> {
+        Matrix4::from_translation(self.position)
+            * Matrix4::from_nonuniform_scale(self.side_length, self.side_length, 1.0)
     }
 }

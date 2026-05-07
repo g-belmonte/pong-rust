@@ -2,7 +2,6 @@ use ash::version::DeviceV1_0;
 use ash::version::EntryV1_0;
 use ash::version::InstanceV1_0;
 use ash::vk;
-use cgmath::Matrix4;
 
 use std::ffi::CString;
 use std::os::raw::c_char;
@@ -14,17 +13,40 @@ use crate::graphics_manager::debug;
 use crate::graphics_manager::platforms;
 use crate::graphics_manager::structures::*;
 
-use super::ModelBuffers;
-
-// Resolved per-draw data passed to `record_command_buffer`. The caller picks
-// the pipeline + descriptor set based on the model's PipelineKind so the
-// recorder doesn't need to know about the GraphicsManager's pipeline fields.
-pub struct Draw<'a> {
+// Both pipelines now use the same vertex+instance pattern. Each pipeline
+// has one shared mesh per call-site (solid: one per registered MeshHandle;
+// textured: a single unit quad), one instance buffer, and one descriptor set
+// per draw batch (solid: shared camera-only set; textured: per-texture set
+// that binds the camera UBO + that texture's view+sampler).
+pub struct SolidPipeline {
     pub pipeline: vk::Pipeline,
-    pub pipeline_layout: vk::PipelineLayout,
+    pub layout: vk::PipelineLayout,
+    pub camera_set: vk::DescriptorSet,
+}
+
+pub struct SolidDraw {
+    pub mesh_vertex_buffer: vk::Buffer,
+    pub mesh_index_buffer: vk::Buffer,
+    pub mesh_index_count: u32,
+    pub instance_buffer: vk::Buffer,
+    pub instance_offset: u64,
+    pub instance_count: u32,
+}
+
+pub struct TexturedPipeline {
+    pub pipeline: vk::Pipeline,
+    pub layout: vk::PipelineLayout,
+    // Shared unit-quad mesh used by every textured instance.
+    pub mesh_vertex_buffer: vk::Buffer,
+    pub mesh_index_buffer: vk::Buffer,
+    pub mesh_index_count: u32,
+}
+
+pub struct TexturedDraw {
     pub descriptor_set: vk::DescriptorSet,
-    pub buffers: &'a ModelBuffers,
-    pub model_matrix: Matrix4<f32>,
+    pub instance_buffer: vk::Buffer,
+    pub instance_offset: u64,
+    pub instance_count: u32,
 }
 
 pub fn create_instance(
@@ -785,7 +807,10 @@ pub fn record_command_buffer(
     framebuffer: vk::Framebuffer,
     render_pass: vk::RenderPass,
     surface_extent: vk::Extent2D,
-    draws: &[Draw],
+    solid: &SolidPipeline,
+    solid_draws: &[SolidDraw],
+    textured: &TexturedPipeline,
+    textured_draws: &[TexturedDraw],
 ) {
     let begin_info = vk::CommandBufferBeginInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
@@ -823,60 +848,87 @@ pub fn record_command_buffer(
             vk::SubpassContents::INLINE,
         );
 
-        // Per-draw rebind. Switching pipeline / descriptor set on every draw is
-        // wasted work when consecutive draws share state — track and skip.
-        // Order is fixed by the caller (handle ordinal) for overdraw correctness,
-        // so no sorting by pipeline.
-        let mut current_pipeline = vk::Pipeline::null();
-        let mut current_set = vk::DescriptorSet::null();
-        let mut current_layout = vk::PipelineLayout::null();
-
-        for draw in draws.iter() {
-            if draw.pipeline != current_pipeline {
-                device.cmd_bind_pipeline(
+        // Solid-colour pass: bind once, then issue one instanced draw per mesh.
+        // The render pass has no depth attachment and neither pipeline blends,
+        // so order matters for overdraw — solid-colour draws first because the
+        // ball sprite (textured) needs to sit on top of paddles/walls.
+        if !solid_draws.is_empty() {
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                solid.pipeline,
+            );
+            let sets = [solid.camera_set];
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                solid.layout,
+                0,
+                &sets,
+                &[],
+            );
+            for d in solid_draws.iter() {
+                let vertex_buffers = [d.mesh_vertex_buffer, d.instance_buffer];
+                let offsets = [0_u64, d.instance_offset];
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                device.cmd_bind_index_buffer(
                     command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    draw.pipeline,
-                );
-                current_pipeline = draw.pipeline;
-                // Pipeline change invalidates set bindings if layouts differ.
-                current_set = vk::DescriptorSet::null();
-            }
-            if draw.descriptor_set != current_set || draw.pipeline_layout != current_layout {
-                let sets = [draw.descriptor_set];
-                device.cmd_bind_descriptor_sets(
-                    command_buffer,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    draw.pipeline_layout,
+                    d.mesh_index_buffer,
                     0,
-                    &sets,
-                    &[],
+                    vk::IndexType::UINT32,
                 );
-                current_set = draw.descriptor_set;
-                current_layout = draw.pipeline_layout;
+                device.cmd_draw_indexed(
+                    command_buffer,
+                    d.mesh_index_count,
+                    d.instance_count,
+                    0,
+                    0,
+                    0,
+                );
             }
+        }
 
-            let vertex_buffers = [draw.buffers.vertex_buffer];
-            let offsets = [0_u64];
-            device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+        // Textured pass: shared unit-quad mesh + one instanced draw per texture.
+        // The descriptor set switches once per texture batch (camera UBO is the
+        // same across all batches; only the sampler+image binding changes).
+        if !textured_draws.is_empty() {
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                textured.pipeline,
+            );
             device.cmd_bind_index_buffer(
                 command_buffer,
-                draw.buffers.index_buffer,
+                textured.mesh_index_buffer,
                 0,
                 vk::IndexType::UINT32,
             );
-            let model_bytes = ::std::slice::from_raw_parts(
-                &draw.model_matrix as *const Matrix4<f32> as *const u8,
-                ::std::mem::size_of::<Matrix4<f32>>(),
-            );
-            device.cmd_push_constants(
-                command_buffer,
-                draw.pipeline_layout,
-                vk::ShaderStageFlags::VERTEX,
-                0,
-                model_bytes,
-            );
-            device.cmd_draw_indexed(command_buffer, draw.buffers.index_count, 1, 0, 0, 0);
+            let mut current_set = vk::DescriptorSet::null();
+            for d in textured_draws.iter() {
+                if d.descriptor_set != current_set {
+                    let sets = [d.descriptor_set];
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        textured.layout,
+                        0,
+                        &sets,
+                        &[],
+                    );
+                    current_set = d.descriptor_set;
+                }
+                let vertex_buffers = [textured.mesh_vertex_buffer, d.instance_buffer];
+                let offsets = [0_u64, d.instance_offset];
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                device.cmd_draw_indexed(
+                    command_buffer,
+                    textured.mesh_index_count,
+                    d.instance_count,
+                    0,
+                    0,
+                    0,
+                );
+            }
         }
 
         device.cmd_end_render_pass(command_buffer);
@@ -1660,17 +1712,27 @@ pub fn create_graphics_pipeline(
         },
     ];
 
-    let binding_description = Vertex::get_binding_description();
-    let attribute_description = Vertex::get_attribute_descriptions();
+    // Two vertex bindings: per-vertex pos at binding 0, per-instance
+    // (model matrix + colour) at binding 1.
+    let binding_descriptions = [
+        Vertex::get_binding_description(),
+        Instance::get_binding_description(),
+    ];
+    let vertex_attrs = Vertex::get_attribute_descriptions();
+    let instance_attrs = Instance::get_attribute_descriptions();
+    let mut attribute_descriptions: Vec<vk::VertexInputAttributeDescription> =
+        Vec::with_capacity(vertex_attrs.len() + instance_attrs.len());
+    attribute_descriptions.extend_from_slice(&vertex_attrs);
+    attribute_descriptions.extend_from_slice(&instance_attrs);
 
     let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineVertexInputStateCreateFlags::empty(),
-        vertex_attribute_description_count: attribute_description.len() as u32,
-        p_vertex_attribute_descriptions: attribute_description.as_ptr(),
-        vertex_binding_description_count: binding_description.len() as u32,
-        p_vertex_binding_descriptions: binding_description.as_ptr(),
+        vertex_attribute_description_count: attribute_descriptions.len() as u32,
+        p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
+        vertex_binding_description_count: binding_descriptions.len() as u32,
+        p_vertex_binding_descriptions: binding_descriptions.as_ptr(),
     };
     let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -1781,21 +1843,17 @@ pub fn create_graphics_pipeline(
 
     let set_layouts = [ubo_set_layout];
 
-    // Per-draw model matrix lives in a push constant block (see main.vert).
-    let push_constant_ranges = [vk::PushConstantRange {
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        offset: 0,
-        size: ::std::mem::size_of::<Matrix4<f32>>() as u32,
-    }];
-
+    // Solid-colour pipeline has no push constants — the per-draw model matrix
+    // is read from binding 1 (Instance) instead. Textured pipeline still uses
+    // a push constant since it draws one model per call.
     let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineLayoutCreateFlags::empty(),
         set_layout_count: set_layouts.len() as u32,
         p_set_layouts: set_layouts.as_ptr(),
-        push_constant_range_count: push_constant_ranges.len() as u32,
-        p_push_constant_ranges: push_constant_ranges.as_ptr(),
+        push_constant_range_count: 0,
+        p_push_constant_ranges: ptr::null(),
     };
 
     let pipeline_layout = unsafe {
@@ -1882,17 +1940,26 @@ pub fn create_textured_graphics_pipeline(
         },
     ];
 
-    let binding_description = TexturedVertex::get_binding_description();
-    let attribute_description = TexturedVertex::get_attribute_descriptions();
+    // Per-vertex pos at binding 0 + per-instance (model + uv_offset/scale) at binding 1.
+    let binding_descriptions = [
+        TexturedVertex::get_binding_description(),
+        TexturedInstance::get_binding_description(),
+    ];
+    let vertex_attrs = TexturedVertex::get_attribute_descriptions();
+    let instance_attrs = TexturedInstance::get_attribute_descriptions();
+    let mut attribute_descriptions: Vec<vk::VertexInputAttributeDescription> =
+        Vec::with_capacity(vertex_attrs.len() + instance_attrs.len());
+    attribute_descriptions.extend_from_slice(&vertex_attrs);
+    attribute_descriptions.extend_from_slice(&instance_attrs);
 
     let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineVertexInputStateCreateFlags::empty(),
-        vertex_attribute_description_count: attribute_description.len() as u32,
-        p_vertex_attribute_descriptions: attribute_description.as_ptr(),
-        vertex_binding_description_count: binding_description.len() as u32,
-        p_vertex_binding_descriptions: binding_description.as_ptr(),
+        vertex_attribute_description_count: attribute_descriptions.len() as u32,
+        p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
+        vertex_binding_description_count: binding_descriptions.len() as u32,
+        p_vertex_binding_descriptions: binding_descriptions.as_ptr(),
     };
     let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -2003,20 +2070,15 @@ pub fn create_textured_graphics_pipeline(
 
     let set_layouts = [textured_set_layout];
 
-    let push_constant_ranges = [vk::PushConstantRange {
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        offset: 0,
-        size: ::std::mem::size_of::<Matrix4<f32>>() as u32,
-    }];
-
+    // No push constants — the per-instance model matrix lives in binding 1.
     let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineLayoutCreateFlags::empty(),
         set_layout_count: set_layouts.len() as u32,
         p_set_layouts: set_layouts.as_ptr(),
-        push_constant_range_count: push_constant_ranges.len() as u32,
-        p_push_constant_ranges: push_constant_ranges.as_ptr(),
+        push_constant_range_count: 0,
+        p_push_constant_ranges: ptr::null(),
     };
 
     let pipeline_layout = unsafe {

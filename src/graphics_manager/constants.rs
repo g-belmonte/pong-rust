@@ -27,6 +27,16 @@ pub const IS_PAINT_FPS_COUNTER: bool = true;
 // allocation failure on `register_textured_model_with`.
 pub const MAX_TEXTURED_MODELS: usize = 256;
 
+// Caps how many solid-colour instances can be live simultaneously: bounds the
+// per-frame instance buffer in `create_instance_buffers`. Pong currently uses
+// ~18 (2 paddles + 2 walls + 14 digit segments). Bump if you exceed it.
+pub const MAX_INSTANCES: usize = 64;
+
+// Caps how many textured instances can be live simultaneously: bounds the
+// per-frame textured instance buffer. Pong currently uses ~10 (1 ball + up to
+// 9 visible glyphs in "Game Over"). Bump if a future feature exceeds it.
+pub const MAX_TEXTURED_INSTANCES: usize = 128;
+
 impl DeviceExtension {
     pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
         [ash::extensions::khr::Swapchain::name().as_ptr()]

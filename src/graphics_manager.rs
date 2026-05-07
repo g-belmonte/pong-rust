@@ -21,7 +21,17 @@ use ash::vk;
 use std::collections::HashMap;
 use std::ptr;
 
-use self::structures::{ModelMesh, TexturedModelMesh, UniformBufferObject};
+use self::structures::{
+    Instance, ModelMesh, TexturedInstance, TexturedVertex, UniformBufferObject,
+};
+
+// Two distinct handle types: MeshHandle identifies a piece of geometry that
+// can be reused across many instances; ModelHandle identifies a single
+// drawable (an instance of a mesh, or a textured model). Solid-colour
+// rendering goes through the mesh+instance path; textured models stay
+// per-model because each owns its own descriptor set.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+pub struct MeshHandle(u32);
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct ModelHandle(u32);
@@ -29,84 +39,57 @@ pub struct ModelHandle(u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TextureHandle(u32);
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-#[allow(dead_code)]
-pub enum PipelineKind {
-    SolidColour,
-    Textured,
-}
-
 pub struct TextureResources {
     image: vk::Image,
     memory: vk::DeviceMemory,
     view: vk::ImageView,
     sampler: vk::Sampler,
-}
-
-pub struct ModelBuffers {
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
-    index_count: u32,
-
-    // Last model matrix supplied via draw_frame's transforms slice. Preserves the
-    // documented behaviour: a registered handle missing from `transforms` redraws
-    // with whatever it was last given (identity at registration).
-    last_model: Matrix4<f32>,
-
-    pipeline: PipelineKind,
-    // Textured-only: one descriptor set per swapchain image, binding the per-image
-    // camera UBO + this model's texture (image view + sampler from `TextureResources`).
-    // Empty for SolidColour models — they share `camera_descriptor_sets`.
+    // One descriptor set per swapchain image (camera UBO[i] + this texture's
+    // view+sampler). Shared across every textured instance that uses this
+    // texture — that's the whole point of the textured-instance refactor.
     descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
-fn build_model_buffers(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
-    mesh: &ModelMesh,
-) -> ModelBuffers {
-    let (vertex_buffer, vertex_buffer_memory) =
-        share::create_vertex_buffer(device, mem_props, command_pool, queue, &mesh.vertices);
-    let (index_buffer, index_buffer_memory) =
-        share::create_index_buffer(device, mem_props, command_pool, queue, &mesh.indices);
+struct MeshBuffers {
+    vertex_buffer: vk::Buffer,
+    vertex_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_memory: vk::DeviceMemory,
+    index_count: u32,
+}
 
-    ModelBuffers {
-        vertex_buffer,
-        vertex_buffer_memory,
-        index_buffer,
-        index_buffer_memory,
-        index_count: mesh.indices.len() as u32,
-        last_model: Matrix4::from_scale(1.0),
-        pipeline: PipelineKind::SolidColour,
-        descriptor_sets: Vec::new(),
+struct InstanceData {
+    mesh: MeshHandle,
+    color: [f32; 3],
+    last_model: Matrix4<f32>,
+}
+
+struct TexturedInstanceData {
+    texture: TextureHandle,
+    uv_offset: [f32; 2],
+    uv_scale: [f32; 2],
+    last_model: Matrix4<f32>,
+}
+
+fn destroy_mesh(device: &ash::Device, mesh: &MeshBuffers) {
+    unsafe {
+        device.destroy_buffer(mesh.index_buffer, None);
+        device.free_memory(mesh.index_memory, None);
+        device.destroy_buffer(mesh.vertex_buffer, None);
+        device.free_memory(mesh.vertex_memory, None);
     }
 }
 
-fn destroy_model_buffers(
+fn destroy_texture_resources(
     device: &ash::Device,
     descriptor_pool: vk::DescriptorPool,
-    buffers: &ModelBuffers,
+    tex: &TextureResources,
 ) {
     unsafe {
-        if !buffers.descriptor_sets.is_empty() {
-            // Pool was created with FREE_DESCRIPTOR_SET so this is legal.
-            device.free_descriptor_sets(descriptor_pool, &buffers.descriptor_sets);
+        // Pool was created with FREE_DESCRIPTOR_SET so this is legal.
+        if !tex.descriptor_sets.is_empty() {
+            device.free_descriptor_sets(descriptor_pool, &tex.descriptor_sets);
         }
-
-        device.destroy_buffer(buffers.index_buffer, None);
-        device.free_memory(buffers.index_buffer_memory, None);
-
-        device.destroy_buffer(buffers.vertex_buffer, None);
-        device.free_memory(buffers.vertex_buffer_memory, None);
-    }
-}
-
-fn destroy_texture_resources(device: &ash::Device, tex: &TextureResources) {
-    unsafe {
         device.destroy_sampler(tex.sampler, None);
         device.destroy_image_view(tex.view, None);
         device.destroy_image(tex.image, None);
@@ -164,8 +147,7 @@ pub struct GraphicsManager {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
     // Second pipeline for textured (sampled image) draws. Coexists with the
-    // solid-colour pipeline in the same render pass; per-model dispatch in
-    // `record_command_buffer` picks one based on `ModelBuffers::pipeline`.
+    // solid-colour pipeline in the same render pass.
     textured_ubo_layout: vk::DescriptorSetLayout,
     textured_pipeline_layout: vk::PipelineLayout,
     textured_pipeline: vk::Pipeline,
@@ -178,8 +160,29 @@ pub struct GraphicsManager {
     descriptor_pool: vk::DescriptorPool,
     camera_descriptor_sets: Vec<vk::DescriptorSet>,
 
-    model_buffers: HashMap<ModelHandle, ModelBuffers>,
+    meshes: HashMap<MeshHandle, MeshBuffers>,
+    next_mesh_handle: u32,
+    instances: HashMap<ModelHandle, InstanceData>,
+    textured_instances: HashMap<ModelHandle, TexturedInstanceData>,
     next_handle: u32,
+    // Per-frame solid-colour instance buffer (host-visible + coherent). Layout
+    // each frame is "all instances of mesh A, then all of mesh B, ..." so each
+    // per-mesh instanced draw can bind it at the right offset.
+    instance_buffers: Vec<vk::Buffer>,
+    instance_buffer_memories: Vec<vk::DeviceMemory>,
+    // Per-frame textured instance buffer, same pattern but for the textured
+    // pipeline. Layout each frame is "all instances of texture A, then B, ...".
+    textured_instance_buffers: Vec<vk::Buffer>,
+    textured_instance_buffer_memories: Vec<vk::DeviceMemory>,
+    // Shared unit quad ([-0.5..0.5]^2) used by every textured instance. Built
+    // once at construction. The vertex shader maps pos to UV via the per-instance
+    // uv_offset/uv_scale, so any sprite size and any UV rect is supported.
+    textured_quad_vertex_buffer: vk::Buffer,
+    textured_quad_vertex_memory: vk::DeviceMemory,
+    textured_quad_index_buffer: vk::Buffer,
+    textured_quad_index_memory: vk::DeviceMemory,
+    textured_quad_index_count: u32,
+
     // Texture lifetime is independent of model lifetime — multiple textured
     // models may share one texture (e.g. a font atlas with one glyph per quad).
     textures: HashMap<TextureHandle, TextureResources>,
@@ -188,9 +191,8 @@ pub struct GraphicsManager {
     current_proj: Matrix4<f32>,
 
     command_pool: vk::CommandPool,
-    // MAX_FRAMES_IN_FLIGHT command buffers, indexed by current_frame. Re-recorded each
-    // frame in draw_frame so the per-draw push-constant model matrix reflects the
-    // current Scene transforms.
+    // MAX_FRAMES_IN_FLIGHT command buffers, indexed by current_frame. Re-recorded
+    // each frame in draw_frame so per-instance/per-draw matrices reflect Scene state.
     command_buffers: Vec<vk::CommandBuffer>,
 
     image_available_semaphores: Vec<vk::Semaphore>,
@@ -266,7 +268,7 @@ impl GraphicsManager {
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
 
-        // Camera lives in the renderer now. View/proj are hardcoded; projection is recomputed
+        // Camera lives in the renderer. View/proj are hardcoded; projection is recomputed
         // on swapchain recreation. Models are registered by Scene after `new()` returns.
         let current_view = Matrix4::look_at(
             Point3::new(0.0, 0.0, 10.0),
@@ -304,8 +306,44 @@ impl GraphicsManager {
             current_proj,
         );
 
-        let model_buffers: HashMap<ModelHandle, ModelBuffers> = HashMap::new();
-        let next_handle: u32 = 0;
+        let (instance_buffers, instance_buffer_memories) = create_instance_buffers(
+            &device,
+            &physical_device_memory_properties,
+            MAX_FRAMES_IN_FLIGHT,
+        );
+
+        let (textured_instance_buffers, textured_instance_buffer_memories) =
+            create_textured_instance_buffers(
+                &device,
+                &physical_device_memory_properties,
+                MAX_FRAMES_IN_FLIGHT,
+            );
+
+        // Shared unit-quad VBO/IBO. Front-facing winding matches the solid-colour
+        // quads (TRIANGLE_LIST, CW: 0,1,2 / 2,3,0).
+        let unit_quad_vertices: [TexturedVertex; 4] = [
+            TexturedVertex { pos: [-0.5, -0.5] },
+            TexturedVertex { pos: [ 0.5, -0.5] },
+            TexturedVertex { pos: [ 0.5,  0.5] },
+            TexturedVertex { pos: [-0.5,  0.5] },
+        ];
+        let unit_quad_indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
+        let (textured_quad_vertex_buffer, textured_quad_vertex_memory) =
+            share::create_vertex_buffer(
+                &device,
+                &physical_device_memory_properties,
+                command_pool,
+                graphics_queue,
+                &unit_quad_vertices,
+            );
+        let (textured_quad_index_buffer, textured_quad_index_memory) =
+            share::create_index_buffer(
+                &device,
+                &physical_device_memory_properties,
+                command_pool,
+                graphics_queue,
+                &unit_quad_indices,
+            );
 
         let command_buffers =
             share::allocate_command_buffers(&device, command_pool, MAX_FRAMES_IN_FLIGHT as u32);
@@ -350,8 +388,20 @@ impl GraphicsManager {
             descriptor_pool,
             camera_descriptor_sets,
 
-            model_buffers,
-            next_handle,
+            meshes: HashMap::new(),
+            next_mesh_handle: 0,
+            instances: HashMap::new(),
+            textured_instances: HashMap::new(),
+            next_handle: 0,
+            instance_buffers,
+            instance_buffer_memories,
+            textured_instance_buffers,
+            textured_instance_buffer_memories,
+            textured_quad_vertex_buffer,
+            textured_quad_vertex_memory,
+            textured_quad_index_buffer,
+            textured_quad_index_memory,
+            textured_quad_index_count: unit_quad_indices.len() as u32,
             textures: HashMap::new(),
             next_texture_handle: 0,
             current_view,
@@ -381,30 +431,69 @@ impl GraphicsManager {
         };
     }
 
-    pub fn register_model(&mut self, mesh: &ModelMesh) -> ModelHandle {
-        let handle = ModelHandle(self.next_handle);
-        self.next_handle += 1;
-        let buffers = build_model_buffers(
+    pub fn register_mesh(&mut self, mesh: &ModelMesh) -> MeshHandle {
+        let handle = MeshHandle(self.next_mesh_handle);
+        self.next_mesh_handle += 1;
+        let (vertex_buffer, vertex_memory) = share::create_vertex_buffer(
             &self.device,
             &self.physical_device_memory_properties,
             self.command_pool,
             self.graphics_queue,
-            mesh,
+            &mesh.vertices,
         );
-        self.model_buffers.insert(handle, buffers);
+        let (index_buffer, index_memory) = share::create_index_buffer(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            &mesh.indices,
+        );
+        self.meshes.insert(
+            handle,
+            MeshBuffers {
+                vertex_buffer,
+                vertex_memory,
+                index_buffer,
+                index_memory,
+                index_count: mesh.indices.len() as u32,
+            },
+        );
+        handle
+    }
+
+    pub fn register_instance(&mut self, mesh: MeshHandle, color: [f32; 3]) -> ModelHandle {
+        assert!(
+            self.meshes.contains_key(&mesh),
+            "register_instance received unknown MeshHandle"
+        );
+        let handle = ModelHandle(self.next_handle);
+        self.next_handle += 1;
+        self.instances.insert(
+            handle,
+            InstanceData {
+                mesh,
+                color,
+                last_model: Matrix4::from_scale(1.0),
+            },
+        );
         handle
     }
 
     #[allow(dead_code)]
-    pub fn unregister_model(&mut self, handle: ModelHandle) {
-        if let Some(buffers) = self.model_buffers.remove(&handle) {
+    pub fn unregister_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(buffers) = self.meshes.remove(&mesh) {
             unsafe {
                 self.device
                     .device_wait_idle()
-                    .expect("device_wait_idle failed in unregister_model");
+                    .expect("device_wait_idle failed in unregister_mesh");
             }
-            destroy_model_buffers(&self.device, self.descriptor_pool, &buffers);
+            destroy_mesh(&self.device, &buffers);
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn unregister_instance(&mut self, handle: ModelHandle) {
+        self.instances.remove(&handle);
     }
 
     pub fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
@@ -426,10 +515,18 @@ impl GraphicsManager {
             1,
         );
         let sampler = share::create_texture_sampler(&self.device);
+        let descriptor_sets = share::create_textured_descriptor_sets(
+            &self.device,
+            self.descriptor_pool,
+            self.textured_ubo_layout,
+            &self.camera_uniform_buffers,
+            view,
+            sampler,
+        );
 
         self.textures.insert(
             handle,
-            TextureResources { image, memory, view, sampler },
+            TextureResources { image, memory, view, sampler, descriptor_sets },
         );
         handle
     }
@@ -460,10 +557,18 @@ impl GraphicsManager {
             1,
         );
         let sampler = share::create_texture_sampler(&self.device);
+        let descriptor_sets = share::create_textured_descriptor_sets(
+            &self.device,
+            self.descriptor_pool,
+            self.textured_ubo_layout,
+            &self.camera_uniform_buffers,
+            view,
+            sampler,
+        );
 
         self.textures.insert(
             handle,
-            TextureResources { image, memory, view, sampler },
+            TextureResources { image, memory, view, sampler, descriptor_sets },
         );
         handle
     }
@@ -476,60 +581,37 @@ impl GraphicsManager {
                     .device_wait_idle()
                     .expect("device_wait_idle failed in unregister_texture");
             }
-            destroy_texture_resources(&self.device, &tex);
+            destroy_texture_resources(&self.device, self.descriptor_pool, &tex);
         }
     }
 
-    #[allow(dead_code)]
-    pub fn register_textured_model_with(
+    pub fn register_textured_instance(
         &mut self,
-        mesh: &TexturedModelMesh,
         texture: TextureHandle,
+        uv_offset: [f32; 2],
+        uv_scale: [f32; 2],
     ) -> ModelHandle {
-        let tex = self
-            .textures
-            .get(&texture)
-            .expect("register_textured_model_with received unknown TextureHandle");
-
-        let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
-            &self.device,
-            &self.physical_device_memory_properties,
-            self.command_pool,
-            self.graphics_queue,
-            &mesh.vertices,
+        assert!(
+            self.textures.contains_key(&texture),
+            "register_textured_instance received unknown TextureHandle"
         );
-        let (index_buffer, index_buffer_memory) = share::create_index_buffer(
-            &self.device,
-            &self.physical_device_memory_properties,
-            self.command_pool,
-            self.graphics_queue,
-            &mesh.indices,
-        );
-
-        let descriptor_sets = share::create_textured_descriptor_sets(
-            &self.device,
-            self.descriptor_pool,
-            self.textured_ubo_layout,
-            &self.camera_uniform_buffers,
-            tex.view,
-            tex.sampler,
-        );
-
-        let buffers = ModelBuffers {
-            vertex_buffer,
-            vertex_buffer_memory,
-            index_buffer,
-            index_buffer_memory,
-            index_count: mesh.indices.len() as u32,
-            last_model: Matrix4::from_scale(1.0),
-            pipeline: PipelineKind::Textured,
-            descriptor_sets,
-        };
-
         let handle = ModelHandle(self.next_handle);
         self.next_handle += 1;
-        self.model_buffers.insert(handle, buffers);
+        self.textured_instances.insert(
+            handle,
+            TexturedInstanceData {
+                texture,
+                uv_offset,
+                uv_scale,
+                last_model: Matrix4::from_scale(1.0),
+            },
+        );
         handle
+    }
+
+    #[allow(dead_code)]
+    pub fn unregister_textured_instance(&mut self, handle: ModelHandle) {
+        self.textured_instances.remove(&handle);
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
@@ -560,44 +642,158 @@ impl GraphicsManager {
             }
         };
 
-        // Update each touched model's last_model. Handles in transforms that aren't
-        // registered are a programming error → panic. Registered handles missing from
-        // transforms keep last frame's model matrix.
+        // A handle in `transforms` that isn't registered is a programming error → panic.
+        // A registered handle missing from `transforms` keeps last frame's matrix.
         for (handle, transform) in transforms {
-            self.model_buffers
-                .get_mut(handle)
-                .expect("draw_frame received transform for unknown ModelHandle")
-                .last_model = *transform;
+            if let Some(inst) = self.instances.get_mut(handle) {
+                inst.last_model = *transform;
+            } else if let Some(tinst) = self.textured_instances.get_mut(handle) {
+                tinst.last_model = *transform;
+            } else {
+                panic!("draw_frame received transform for unknown ModelHandle");
+            }
         }
 
-        // Sorted by ModelHandle ordinal so registration order = draw order.
-        // The render pass has no depth attachment and the pipeline has no alpha
-        // blending, so overdraw correctness depends on this stable order.
-        let mut entries: Vec<_> = self.model_buffers.iter().collect();
-        entries.sort_by_key(|(handle, _)| **handle);
+        // SOLID-COLOUR: group instances by mesh and pack them into the per-frame
+        // instance buffer. Iterate meshes in MeshHandle order so the layout is
+        // deterministic; iterate instances inside each mesh by ModelHandle order.
+        let mut instances_by_mesh: HashMap<MeshHandle, Vec<(ModelHandle, &InstanceData)>> =
+            HashMap::new();
+        for (h, inst) in self.instances.iter() {
+            instances_by_mesh
+                .entry(inst.mesh)
+                .or_insert_with(Vec::new)
+                .push((*h, inst));
+        }
+
+        let mut packed: Vec<Instance> = Vec::with_capacity(self.instances.len());
+        let mut solid_draws: Vec<share::SolidDraw> = Vec::new();
+        let mut mesh_handles: Vec<MeshHandle> = self.meshes.keys().copied().collect();
+        mesh_handles.sort();
+        for mh in mesh_handles {
+            let group = match instances_by_mesh.get_mut(&mh) {
+                Some(g) => g,
+                None => continue,
+            };
+            group.sort_by_key(|(h, _)| *h);
+            let mesh = &self.meshes[&mh];
+            let offset_bytes = (packed.len() * ::std::mem::size_of::<Instance>()) as u64;
+            let count = group.len() as u32;
+            for (_, inst) in group.iter() {
+                packed.push(Instance {
+                    model: inst.last_model,
+                    color: inst.color,
+                });
+            }
+            solid_draws.push(share::SolidDraw {
+                mesh_vertex_buffer: mesh.vertex_buffer,
+                mesh_index_buffer: mesh.index_buffer,
+                mesh_index_count: mesh.index_count,
+                instance_buffer: self.instance_buffers[self.current_frame],
+                instance_offset: offset_bytes,
+                instance_count: count,
+            });
+        }
+
+        if !packed.is_empty() {
+            let buffer_size =
+                (packed.len() * ::std::mem::size_of::<Instance>()) as vk::DeviceSize;
+            unsafe {
+                let data_ptr = self
+                    .device
+                    .map_memory(
+                        self.instance_buffer_memories[self.current_frame],
+                        0,
+                        buffer_size,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .expect("Failed to map instance buffer memory")
+                    as *mut Instance;
+                data_ptr.copy_from_nonoverlapping(packed.as_ptr(), packed.len());
+                self.device
+                    .unmap_memory(self.instance_buffer_memories[self.current_frame]);
+            }
+        }
+
+        // TEXTURED: same idea, grouped by texture. Iterate textures in
+        // TextureHandle order; iterate instances inside each texture by
+        // ModelHandle order.
+        let mut tinstances_by_texture: HashMap<
+            TextureHandle,
+            Vec<(ModelHandle, &TexturedInstanceData)>,
+        > = HashMap::new();
+        for (h, ti) in self.textured_instances.iter() {
+            tinstances_by_texture
+                .entry(ti.texture)
+                .or_insert_with(Vec::new)
+                .push((*h, ti));
+        }
+
+        let mut tpacked: Vec<TexturedInstance> =
+            Vec::with_capacity(self.textured_instances.len());
+        let mut textured_draws: Vec<share::TexturedDraw> = Vec::new();
+        let mut texture_handles: Vec<TextureHandle> =
+            self.textures.keys().copied().collect();
+        texture_handles.sort_by_key(|h| h.0);
         let camera_set = self.camera_descriptor_sets[image_index as usize];
-        let draws: Vec<share::Draw> = entries
-            .iter()
-            .map(|(_, buffers)| {
-                let (pipeline, pipeline_layout, descriptor_set) = match buffers.pipeline {
-                    PipelineKind::SolidColour => {
-                        (self.graphics_pipeline, self.pipeline_layout, camera_set)
-                    }
-                    PipelineKind::Textured => (
-                        self.textured_pipeline,
-                        self.textured_pipeline_layout,
-                        buffers.descriptor_sets[image_index as usize],
-                    ),
-                };
-                share::Draw {
-                    pipeline,
-                    pipeline_layout,
-                    descriptor_set,
-                    buffers: *buffers,
-                    model_matrix: buffers.last_model,
-                }
-            })
-            .collect();
+        let _ = camera_set; // camera UBO is bound through each texture's descriptor set.
+        for th in texture_handles {
+            let group = match tinstances_by_texture.get_mut(&th) {
+                Some(g) => g,
+                None => continue,
+            };
+            group.sort_by_key(|(h, _)| *h);
+            let tex = &self.textures[&th];
+            let offset_bytes =
+                (tpacked.len() * ::std::mem::size_of::<TexturedInstance>()) as u64;
+            let count = group.len() as u32;
+            for (_, ti) in group.iter() {
+                tpacked.push(TexturedInstance {
+                    model: ti.last_model,
+                    uv_offset: ti.uv_offset,
+                    uv_scale: ti.uv_scale,
+                });
+            }
+            textured_draws.push(share::TexturedDraw {
+                descriptor_set: tex.descriptor_sets[image_index as usize],
+                instance_buffer: self.textured_instance_buffers[self.current_frame],
+                instance_offset: offset_bytes,
+                instance_count: count,
+            });
+        }
+
+        if !tpacked.is_empty() {
+            let buffer_size =
+                (tpacked.len() * ::std::mem::size_of::<TexturedInstance>()) as vk::DeviceSize;
+            unsafe {
+                let data_ptr = self
+                    .device
+                    .map_memory(
+                        self.textured_instance_buffer_memories[self.current_frame],
+                        0,
+                        buffer_size,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .expect("Failed to map textured instance buffer memory")
+                    as *mut TexturedInstance;
+                data_ptr.copy_from_nonoverlapping(tpacked.as_ptr(), tpacked.len());
+                self.device
+                    .unmap_memory(self.textured_instance_buffer_memories[self.current_frame]);
+            }
+        }
+
+        let solid_pipeline = share::SolidPipeline {
+            pipeline: self.graphics_pipeline,
+            layout: self.pipeline_layout,
+            camera_set,
+        };
+        let textured_pipeline = share::TexturedPipeline {
+            pipeline: self.textured_pipeline,
+            layout: self.textured_pipeline_layout,
+            mesh_vertex_buffer: self.textured_quad_vertex_buffer,
+            mesh_index_buffer: self.textured_quad_index_buffer,
+            mesh_index_count: self.textured_quad_index_count,
+        };
 
         let command_buffer = self.command_buffers[self.current_frame];
         unsafe {
@@ -611,7 +807,10 @@ impl GraphicsManager {
             self.swapchain_framebuffers[image_index as usize],
             self.render_pass,
             self.swapchain_extent,
-            &draws,
+            &solid_pipeline,
+            &solid_draws,
+            &textured_pipeline,
+            &textured_draws,
         );
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
@@ -787,11 +986,33 @@ impl Drop for GraphicsManager {
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
 
-            for buffers in self.model_buffers.values() {
-                destroy_model_buffers(&self.device, self.descriptor_pool, buffers);
+            for mesh in self.meshes.values() {
+                destroy_mesh(&self.device, mesh);
             }
             for tex in self.textures.values() {
-                destroy_texture_resources(&self.device, tex);
+                destroy_texture_resources(&self.device, self.descriptor_pool, tex);
+            }
+
+            self.device
+                .destroy_buffer(self.textured_quad_index_buffer, None);
+            self.device
+                .free_memory(self.textured_quad_index_memory, None);
+            self.device
+                .destroy_buffer(self.textured_quad_vertex_buffer, None);
+            self.device
+                .free_memory(self.textured_quad_vertex_memory, None);
+
+            for &b in self.instance_buffers.iter() {
+                self.device.destroy_buffer(b, None);
+            }
+            for &m in self.instance_buffer_memories.iter() {
+                self.device.free_memory(m, None);
+            }
+            for &b in self.textured_instance_buffers.iter() {
+                self.device.destroy_buffer(b, None);
+            }
+            for &m in self.textured_instance_buffer_memories.iter() {
+                self.device.free_memory(m, None);
             }
 
             self.device
@@ -820,4 +1041,49 @@ impl Drop for GraphicsManager {
             self.instance.destroy_instance(None);
         }
     }
+}
+
+// Persistent host-visible+coherent instance buffers (one per frame in flight).
+// Each frame's buffer is rewritten in draw_frame before being read by the GPU.
+// Coherent memory means we don't need explicit flushes.
+fn create_instance_buffers(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    count: usize,
+) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
+    let buffer_size =
+        (MAX_INSTANCES * ::std::mem::size_of::<Instance>()) as vk::DeviceSize;
+    create_per_frame_vertex_buffers(device, mem_props, count, buffer_size)
+}
+
+fn create_textured_instance_buffers(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    count: usize,
+) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
+    let buffer_size =
+        (MAX_TEXTURED_INSTANCES * ::std::mem::size_of::<TexturedInstance>()) as vk::DeviceSize;
+    create_per_frame_vertex_buffers(device, mem_props, count, buffer_size)
+}
+
+fn create_per_frame_vertex_buffers(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    count: usize,
+    buffer_size: vk::DeviceSize,
+) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
+    let mut buffers = Vec::with_capacity(count);
+    let mut memories = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (buffer, memory) = share::create_buffer(
+            device,
+            buffer_size,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            mem_props,
+        );
+        buffers.push(buffer);
+        memories.push(memory);
+    }
+    (buffers, memories)
 }

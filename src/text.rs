@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use cgmath::{Matrix4, Vector3};
 use fontdue::{Font, FontSettings};
 
-use crate::graphics_manager::structures::{TexturedModelMesh, TexturedVertex};
 use crate::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
 
 const PRINTABLE_ASCII_START: u32 = 32;
@@ -140,8 +139,18 @@ impl FontAtlas {
     }
 }
 
+// Per-glyph state. The instance handle drives a single textured-instance draw
+// (every glyph in the label shares the atlas texture, so they batch into one
+// `vkCmdDrawIndexed`). `local_offset` is the centre of the glyph in label-local
+// world coords; `world_size` is the glyph's scaled width/height.
+struct GlyphInstance {
+    handle: ModelHandle,
+    local_offset: Vector3<f32>,
+    world_size: (f32, f32),
+}
+
 pub struct TextLabel {
-    glyphs: Vec<ModelHandle>,
+    glyphs: Vec<GlyphInstance>,
     pub position: Vector3<f32>,
     pub visible: bool,
 }
@@ -164,13 +173,10 @@ impl TextLabel {
 
         // Line vertically centred: baseline placed so the (ascent..descent) span
         // straddles y=0 in label-local pixel space (positive Y is downwards).
-        // In fontdue, ascent > 0 and descent < 0; line height = ascent - descent.
-        // baseline_y_local = (ascent + descent) / 2 in down-positive coords places
-        // the centre of [top, bottom] at 0.
         let baseline_y_local = (atlas.ascent + atlas.descent) / 2.0;
         let mut pen_x = -total_advance / 2.0;
 
-        let mut glyph_handles = Vec::new();
+        let mut glyphs = Vec::new();
         for ch in text.chars() {
             let g = match atlas.glyphs.get(&ch) {
                 Some(g) => *g,
@@ -185,22 +191,30 @@ impl TextLabel {
                 let w = g.width * scale;
                 let h = g.height * scale;
 
-                let mesh = TexturedModelMesh {
-                    vertices: vec![
-                        TexturedVertex { pos: [tlx,     tly    ], uv: [g.uv_min[0], g.uv_min[1]] },
-                        TexturedVertex { pos: [tlx + w, tly    ], uv: [g.uv_max[0], g.uv_min[1]] },
-                        TexturedVertex { pos: [tlx + w, tly + h], uv: [g.uv_max[0], g.uv_max[1]] },
-                        TexturedVertex { pos: [tlx,     tly + h], uv: [g.uv_min[0], g.uv_max[1]] },
-                    ],
-                    indices: vec![0u32, 1, 2, 2, 3, 0],
+                let uv_offset = g.uv_min;
+                let uv_scale = [g.uv_max[0] - g.uv_min[0], g.uv_max[1] - g.uv_min[1]];
+                let handle = gm.register_textured_instance(atlas.texture, uv_offset, uv_scale);
+
+                // Centre of the glyph rect in label-local coords. The unit quad
+                // is [-0.5..0.5]^2, so per-frame model = Translate(label_pos +
+                // glyph_centre) * Scale(w, h) maps it onto the glyph's world rect.
+                let local_offset = Vector3 {
+                    x: tlx + w * 0.5,
+                    y: tly + h * 0.5,
+                    z: 0.0,
                 };
-                glyph_handles.push(gm.register_textured_model_with(&mesh, atlas.texture));
+
+                glyphs.push(GlyphInstance {
+                    handle,
+                    local_offset,
+                    world_size: (w, h),
+                });
             }
             pen_x += g.advance;
         }
 
         Self {
-            glyphs: glyph_handles,
+            glyphs,
             position,
             visible: true,
         }
@@ -211,11 +225,18 @@ impl TextLabel {
     }
 
     pub fn get_model_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
-        let m = if self.visible {
-            Matrix4::from_translation(self.position)
-        } else {
-            Matrix4::from_translation(OFFSCREEN)
-        };
-        self.glyphs.iter().map(|h| (*h, m)).collect()
+        self.glyphs
+            .iter()
+            .map(|g| {
+                let centre = if self.visible {
+                    self.position + g.local_offset
+                } else {
+                    OFFSCREEN
+                };
+                let m = Matrix4::from_translation(centre)
+                    * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0);
+                (g.handle, m)
+            })
+            .collect()
     }
 }

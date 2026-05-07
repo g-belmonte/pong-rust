@@ -3,11 +3,17 @@ use num::clamp;
 use rand::Rng;
 
 use crate::ball::Ball;
-use crate::digit::Digit;
+use crate::digit::{Digit, DigitMeshes};
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 use crate::paddle::Paddle;
 use crate::text::{FontAtlas, TextLabel};
 use crate::wall::Wall;
+
+const PADDLE_HEIGHT: f32 = 2.0;
+const PADDLE_WIDTH: f32 = 0.2;
+const WALL_HEIGHT: f32 = 0.2;
+const WALL_WIDTH: f32 = 10.0;
+const DIGIT_SEGMENT_SIZE: f32 = 0.4;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const FONT_RASTER_PX: f32 = 48.0;
@@ -73,67 +79,52 @@ impl Scene {
         );
         game_over_label.set_visible(false);
 
+        // Register each shared solid-colour mesh exactly once. Both paddles
+        // share one mesh, both walls share one, and all digit segments share
+        // two (horizontal/vertical). Per-instance colour is supplied later.
+        let paddle_mesh = Paddle::register_mesh(gm, PADDLE_HEIGHT, PADDLE_WIDTH);
+        let wall_mesh = Wall::register_mesh(gm, WALL_HEIGHT, WALL_WIDTH);
+        let digit_meshes = DigitMeshes::register(gm, DIGIT_SEGMENT_SIZE);
+
         Self {
-            left_paddle: Paddle::new(
+            left_paddle: Paddle::with_mesh(
                 gm,
-                Vector3 {
-                    x: -4.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                2.0,
-                0.2,
+                paddle_mesh,
+                Vector3 { x: -4.0, y: 0.0, z: 0.0 },
+                PADDLE_HEIGHT,
+                PADDLE_WIDTH,
                 color::RED,
             ),
-            right_paddle: Paddle::new(
+            right_paddle: Paddle::with_mesh(
                 gm,
-                Vector3 {
-                    x: 4.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                2.0,
-                0.2,
+                paddle_mesh,
+                Vector3 { x: 4.0, y: 0.0, z: 0.0 },
+                PADDLE_HEIGHT,
+                PADDLE_WIDTH,
                 color::BLUE,
             ),
-            top_wall: Wall::new(
+            top_wall: Wall::with_mesh(
                 gm,
-                Vector3 {
-                    x: 0.0,
-                    y: -3.2,
-                    z: 0.0,
-                },
-                0.2,
-                10.0,
+                wall_mesh,
+                Vector3 { x: 0.0, y: -3.2, z: 0.0 },
+                WALL_HEIGHT,
             ),
-            bottom_wall: Wall::new(
+            bottom_wall: Wall::with_mesh(
                 gm,
-                Vector3 {
-                    x: 0.0,
-                    y: 3.2,
-                    z: 0.0,
-                },
-                0.2,
-                10.0,
+                wall_mesh,
+                Vector3 { x: 0.0, y: 3.2, z: 0.0 },
+                WALL_HEIGHT,
             ),
             ball: Ball::new(gm, Vector3::zero(), 0.2),
             left_digit: Digit::new(
                 gm,
-                Vector3 {
-                    x: -1.0,
-                    y: -3.7,
-                    z: 0.0,
-                },
-                0.4,
+                &digit_meshes,
+                Vector3 { x: -1.0, y: -3.7, z: 0.0 },
             ),
             right_digit: Digit::new(
                 gm,
-                Vector3 {
-                    x: 1.0,
-                    y: -3.7,
-                    z: 0.0,
-                },
-                0.4,
+                &digit_meshes,
+                Vector3 { x: 1.0, y: -3.7, z: 0.0 },
             ),
             left_score: 0,
             right_score: 0,
@@ -169,10 +160,7 @@ impl Scene {
                 self.bottom_wall.model_handle,
                 Matrix4::from_translation(self.bottom_wall.position),
             ),
-            (
-                self.ball.model_handle,
-                Matrix4::from_translation(self.ball.position),
-            ),
+            (self.ball.model_handle, self.ball.model_matrix()),
         ];
         transforms.extend(self.left_digit.get_model_transforms());
         transforms.extend(self.right_digit.get_model_transforms());
