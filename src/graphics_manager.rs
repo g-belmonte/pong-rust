@@ -924,7 +924,9 @@ impl GraphicsManager {
         self.swapchain_loader = swapchain_stuff.swapchain_loader;
         self.swapchain = swapchain_stuff.swapchain;
         self.swapchain_images = swapchain_stuff.swapchain_images;
-        self.swapchain_format = swapchain_stuff.swapchain_format;
+        let new_format = swapchain_stuff.swapchain_format;
+        let format_changed = new_format != self.swapchain_format;
+        self.swapchain_format = new_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
         // render_finished_semaphores are indexed by swapchain image; rebuild
@@ -957,7 +959,14 @@ impl GraphicsManager {
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
-        self.render_pass = share::create_render_pass(&self.device, self.swapchain_format);
+        // Render pass only depends on swapchain format, which rarely changes —
+        // skip the destroy + recreate when the format is unchanged.
+        if format_changed {
+            unsafe {
+                self.device.destroy_render_pass(self.render_pass, None);
+            }
+            self.render_pass = share::create_render_pass(&self.device, self.swapchain_format);
+        }
         let (graphics_pipeline, pipeline_layout) = share::create_graphics_pipeline(
             &self.device,
             self.render_pass,
@@ -996,7 +1005,6 @@ impl GraphicsManager {
             self.device.destroy_pipeline(self.textured_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.textured_pipeline_layout, None);
-            self.device.destroy_render_pass(self.render_pass, None);
             for &image_view in self.swapchain_imageviews.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
@@ -1019,6 +1027,7 @@ impl Drop for GraphicsManager {
             }
 
             self.cleanup_swapchain();
+            self.device.destroy_render_pass(self.render_pass, None);
 
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
