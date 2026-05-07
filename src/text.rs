@@ -3,22 +3,13 @@ use std::collections::HashMap;
 use cgmath::{Matrix4, Vector3};
 use fontdue::{Font, FontSettings};
 
+use crate::graphics_manager::structures::hidden_transform;
 use crate::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
 
 const PRINTABLE_ASCII_START: u32 = 32;
 const PRINTABLE_ASCII_END: u32 = 126;
 const ATLAS_SIZE: u32 = 512;
 const ATLAS_PADDING: u32 = 1;
-
-// Far enough that perspective culls it. Mirrors Digit's "park unlit segments
-// offscreen" trick — emitting empty transforms would just leave glyphs at their
-// last position (or the identity from registration), since draw_frame redraws
-// any registered model whose handle is missing from `transforms`.
-const OFFSCREEN: cgmath::Vector3<f32> = cgmath::Vector3 {
-    x: 1000.0,
-    y: 1000.0,
-    z: 0.0,
-};
 
 #[derive(Clone, Copy)]
 pub struct GlyphInfo {
@@ -225,16 +216,17 @@ impl TextLabel {
     }
 
     pub fn get_model_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
+        // Hidden labels park every glyph off-screen rather than dropping
+        // the transforms — see `hidden_transform` for the rationale.
         self.glyphs
             .iter()
             .map(|g| {
-                let centre = if self.visible {
-                    self.position + g.local_offset
+                let m = if self.visible {
+                    Matrix4::from_translation(self.position + g.local_offset)
+                        * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0)
                 } else {
-                    OFFSCREEN
+                    hidden_transform()
                 };
-                let m = Matrix4::from_translation(centre)
-                    * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0);
                 (g.handle, m)
             })
             .collect()

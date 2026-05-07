@@ -1,3 +1,17 @@
+//! Game scene: physics, state, and the registry of game objects.
+//!
+//! ## Coordinate convention
+//!
+//! **Positive Y is downwards.** This is load-bearing throughout the project:
+//! - the top wall sits at `y = -WALL_OFFSET_Y`, the bottom at `y = +WALL_OFFSET_Y`,
+//! - `Action::LeftPaddleUp` sets a *negative* y-velocity,
+//! - the digit scoreboard sits *above* the play field at `y ≈ -3.7`.
+//!
+//! The convention matches the Vulkan clip-space Y direction the renderer uses,
+//! so the scene's world coordinates and the framebuffer agree without flipping.
+//! New code in this layer must follow the same convention; `digit.rs` and
+//! `text.rs` mirror it.
+
 use cgmath::{Matrix4, Vector2, Vector3, Zero};
 use num::clamp;
 use rand::Rng;
@@ -14,6 +28,18 @@ const PADDLE_WIDTH: f32 = 0.2;
 const WALL_HEIGHT: f32 = 0.2;
 const WALL_WIDTH: f32 = 10.0;
 const DIGIT_SEGMENT_SIZE: f32 = 0.4;
+
+// Walls are placed symmetrically around y = 0; positive Y is downwards, so
+// the top wall is at -WALL_OFFSET_Y and the bottom at +WALL_OFFSET_Y.
+const WALL_OFFSET_Y: f32 = 3.2;
+// Ball's |x| past this counts as a goal — slightly outside paddle x (±4.0)
+// so the ball visibly leaves the play field before scoring.
+const GOAL_LINE_X: f32 = 4.7;
+// Paddle vertical speed in world units / second when a movement key is held.
+const PADDLE_SPEED: f32 = 2.0;
+// Ball horizontal speed at kickoff. Sign is randomised; vertical component
+// is sampled in (-1.0, 1.0).
+const BALL_KICKOFF_SPEED_X: f32 = 4.0;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const FONT_RASTER_PX: f32 = 48.0;
@@ -106,13 +132,13 @@ impl Scene {
             top_wall: Wall::with_mesh(
                 gm,
                 wall_mesh,
-                Vector3 { x: 0.0, y: -3.2, z: 0.0 },
+                Vector3 { x: 0.0, y: -WALL_OFFSET_Y, z: 0.0 },
                 WALL_HEIGHT,
             ),
             bottom_wall: Wall::with_mesh(
                 gm,
                 wall_mesh,
-                Vector3 { x: 0.0, y: 3.2, z: 0.0 },
+                Vector3 { x: 0.0, y: WALL_OFFSET_Y, z: 0.0 },
                 WALL_HEIGHT,
             ),
             ball: Ball::new(gm, Vector3::zero(), 0.2),
@@ -170,7 +196,8 @@ impl Scene {
     }
 
     pub fn update(&mut self, delta_time: f32) {
-        // NOTE: positive Y is downwards, so upper_boundary < lower_boundary
+        // upper_boundary < lower_boundary because positive Y is downwards
+        // (see module-level doc).
         let upper_boundary = self.top_wall.position.y + (self.top_wall.height / 2.0);
         let lower_boundary = self.bottom_wall.position.y - (self.bottom_wall.height / 2.0);
         let hpw = self.left_paddle.width / 2.0;
@@ -262,26 +289,31 @@ impl Scene {
     }
 
     pub fn game_over(&self) -> bool {
-        self.ball.position.x > 4.7 || self.ball.position.x < -4.7
+        self.ball.position.x > GOAL_LINE_X || self.ball.position.x < -GOAL_LINE_X
     }
 
     pub fn match_over(&self) -> bool {
         self.left_score >= WINNING_SCORE || self.right_score >= WINNING_SCORE
     }
 
+    fn reset_positions(&mut self) {
+        self.ball.position = Vector3::zero();
+        self.left_paddle.position.y = 0.0;
+        self.right_paddle.position.y = 0.0;
+    }
+
     pub fn handle_action(&mut self, action: Action) {
         match action {
-            // positive y is downwards
-            Action::LeftPaddleUp => self.left_paddle.velocity = -2.0,
-            Action::LeftPaddleDown => self.left_paddle.velocity = 2.0,
+            Action::LeftPaddleUp => self.left_paddle.velocity = -PADDLE_SPEED,
+            Action::LeftPaddleDown => self.left_paddle.velocity = PADDLE_SPEED,
             Action::LeftPaddleStop => self.left_paddle.velocity = 0.0,
-            Action::RightPaddleUp => self.right_paddle.velocity = -2.0,
-            Action::RightPaddleDown => self.right_paddle.velocity = 2.0,
+            Action::RightPaddleUp => self.right_paddle.velocity = -PADDLE_SPEED,
+            Action::RightPaddleDown => self.right_paddle.velocity = PADDLE_SPEED,
             Action::RightPaddleStop => self.right_paddle.velocity = 0.0,
             Action::Kickoff => {
                 let mut rng = rand::thread_rng();
                 self.ball.velocity = Vector2 {
-                    x: -4.0,
+                    x: -BALL_KICKOFF_SPEED_X,
                     y: rng.gen_range(-1.0..1.0),
                 };
                 if rand::random() {
@@ -289,10 +321,10 @@ impl Scene {
                 }
             }
             Action::GameOver => {
-                if self.ball.position.x > 4.7 {
+                if self.ball.position.x > GOAL_LINE_X {
                     self.left_score += 1;
                     self.left_digit.set_value(self.left_score);
-                } else if self.ball.position.x < -4.7 {
+                } else if self.ball.position.x < -GOAL_LINE_X {
                     self.right_score += 1;
                     self.right_digit.set_value(self.right_score);
                 }
@@ -300,17 +332,9 @@ impl Scene {
                 self.left_paddle.velocity = 0.0;
                 self.right_paddle.velocity = 0.0;
             }
-            Action::ResetRound => {
-                self.ball.position.x = 0.0;
-                self.ball.position.y = 0.0;
-                self.left_paddle.position.y = 0.0;
-                self.right_paddle.position.y = 0.0;
-            }
+            Action::ResetRound => self.reset_positions(),
             Action::ResetGame => {
-                self.ball.position.x = 0.0;
-                self.ball.position.y = 0.0;
-                self.left_paddle.position.y = 0.0;
-                self.right_paddle.position.y = 0.0;
+                self.reset_positions();
                 self.left_score = 0;
                 self.right_score = 0;
                 self.left_digit.set_value(0);

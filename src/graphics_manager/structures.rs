@@ -1,7 +1,26 @@
 use ash::vk;
-use cgmath::Matrix4;
+use cgmath::{Matrix4, Vector3};
 
 use memoffset::offset_of;
+
+/// World position used to "park" a registered instance off-screen.
+///
+/// `register_instance` always emits a draw, and `draw_frame` reuses the
+/// instance's last transform if a fresh one isn't supplied. To hide an
+/// instance we therefore translate it far enough that perspective culls it
+/// rather than try to skip it from the draw list. Used by `Digit` (unlit
+/// segments) and `TextLabel` (hidden labels). See `hidden_transform`.
+pub const HIDDEN_TRANSLATION: Vector3<f32> = Vector3 {
+    x: 1000.0,
+    y: 1000.0,
+    z: 0.0,
+};
+
+/// Convenience for the "park off-screen" pattern. Equivalent to
+/// `Matrix4::from_translation(HIDDEN_TRANSLATION)`.
+pub fn hidden_transform() -> Matrix4<f32> {
+    Matrix4::from_translation(HIDDEN_TRANSLATION)
+}
 
 pub struct DeviceExtension {
     pub names: [&'static str; 1],
@@ -54,6 +73,22 @@ pub struct SyncObjects {
 pub struct ModelMesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+}
+
+/// Build an axis-aligned rectangle mesh centred on the origin.
+/// Used by every solid-colour drawable in the game (paddles, walls, digit segments).
+pub fn rect_mesh(width: f32, height: f32) -> ModelMesh {
+    let hw = width / 2.0;
+    let hh = height / 2.0;
+    ModelMesh {
+        vertices: vec![
+            Vertex { pos: [-hw, -hh] },
+            Vertex { pos: [ hw, -hh] },
+            Vertex { pos: [ hw,  hh] },
+            Vertex { pos: [-hw,  hh] },
+        ],
+        indices: vec![0u32, 1, 2, 2, 3, 0],
+    }
 }
 
 #[repr(C)]

@@ -20,13 +20,15 @@ enum GamePhase {
     End,
 }
 
-enum Action {
-    Quit
+enum SystemAction {
+    Quit,
 }
 
-enum PongRustActions {
-    SceneAction(scene::Action),
-    SystemAction(Action),
+/// Outcome of a single keyboard event: either a game-scene action or a
+/// process-level action like quitting.
+enum InputAction {
+    Scene(scene::Action),
+    System(SystemAction),
 }
 
 struct PongRust {
@@ -48,11 +50,11 @@ impl PongRust {
                 WindowEvent::KeyboardInput { input, .. } => {
                     if let Some(action) = self.handle_keyboard_input(input) {
                         match action {
-                            PongRustActions::SystemAction(Action::Quit) => {
+                            InputAction::System(SystemAction::Quit) => {
                                 self.graphics_manager.device_wait_idle();
                                 *control_flow = ControlFlow::Exit
-                            },
-                            PongRustActions::SceneAction(action) => {
+                            }
+                            InputAction::Scene(action) => {
                                 self.scene.handle_action(action);
                             }
                         }
@@ -91,59 +93,40 @@ impl PongRust {
         })
     }
 
-    pub fn handle_keyboard_input(&mut self, input: KeyboardInput) -> Option<PongRustActions> {
+    pub fn handle_keyboard_input(&mut self, input: KeyboardInput) -> Option<InputAction> {
         let KeyboardInput {
             virtual_keycode,
             state,
             ..
         } = input;
+        let act = |a| Some(InputAction::Scene(a));
         match (virtual_keycode, state) {
             (Some(VirtualKeyCode::Escape), ElementState::Pressed) => {
-                Some(PongRustActions::SystemAction(Action::Quit))
-            },
-            (Some(VirtualKeyCode::Space), ElementState::Pressed) => {
-                match self.game_phase {
-                    GamePhase::Start => {
-                        self.game_phase = GamePhase::Playing;
-                        self.scene.set_welcome_visible(false);
-                        Some(PongRustActions::SceneAction(scene::Action::Kickoff))
-
-                    },
-                    GamePhase::Playing => None,
-                    GamePhase::End => {
-                        self.game_phase = GamePhase::Start;
-                        self.scene.set_game_over_visible(false);
-                        self.scene.set_welcome_visible(true);
-                        Some(PongRustActions::SceneAction(scene::Action::ResetGame))
-                    }
-
+                Some(InputAction::System(SystemAction::Quit))
+            }
+            (Some(VirtualKeyCode::Space), ElementState::Pressed) => match self.game_phase {
+                GamePhase::Start => {
+                    self.game_phase = GamePhase::Playing;
+                    self.scene.set_welcome_visible(false);
+                    act(scene::Action::Kickoff)
+                }
+                GamePhase::Playing => None,
+                GamePhase::End => {
+                    self.game_phase = GamePhase::Start;
+                    self.scene.set_game_over_visible(false);
+                    self.scene.set_welcome_visible(true);
+                    act(scene::Action::ResetGame)
                 }
             },
-            (Some(VirtualKeyCode::W), ElementState::Pressed) => {
-                Some(PongRustActions::SceneAction(scene::Action::LeftPaddleUp))
-            },
-            (Some(VirtualKeyCode::W), ElementState::Released) => {
-                Some(PongRustActions::SceneAction(scene::Action::LeftPaddleStop))
-            },
-            (Some(VirtualKeyCode::S), ElementState::Pressed) => {
-                Some(PongRustActions::SceneAction(scene::Action::LeftPaddleDown))
-            },
-            (Some(VirtualKeyCode::S), ElementState::Released) => {
-                Some(PongRustActions::SceneAction(scene::Action::LeftPaddleStop))
-            },
-            (Some(VirtualKeyCode::I), ElementState::Pressed) => {
-                Some(PongRustActions::SceneAction(scene::Action::RightPaddleUp))
-            },
-            (Some(VirtualKeyCode::I), ElementState::Released) => {
-                Some(PongRustActions::SceneAction(scene::Action::RightPaddleStop))
-            },
-            (Some(VirtualKeyCode::K), ElementState::Pressed) => {
-                Some(PongRustActions::SceneAction(scene::Action::RightPaddleDown))
-            },
-            (Some(VirtualKeyCode::K), ElementState::Released) => {
-                Some(PongRustActions::SceneAction(scene::Action::RightPaddleStop))
-            },
-            _ => None
+            (Some(VirtualKeyCode::W), ElementState::Pressed) => act(scene::Action::LeftPaddleUp),
+            (Some(VirtualKeyCode::W), ElementState::Released) => act(scene::Action::LeftPaddleStop),
+            (Some(VirtualKeyCode::S), ElementState::Pressed) => act(scene::Action::LeftPaddleDown),
+            (Some(VirtualKeyCode::S), ElementState::Released) => act(scene::Action::LeftPaddleStop),
+            (Some(VirtualKeyCode::I), ElementState::Pressed) => act(scene::Action::RightPaddleUp),
+            (Some(VirtualKeyCode::I), ElementState::Released) => act(scene::Action::RightPaddleStop),
+            (Some(VirtualKeyCode::K), ElementState::Pressed) => act(scene::Action::RightPaddleDown),
+            (Some(VirtualKeyCode::K), ElementState::Released) => act(scene::Action::RightPaddleStop),
+            _ => None,
         }
     }
 }

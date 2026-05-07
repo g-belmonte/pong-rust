@@ -1,6 +1,6 @@
 use cgmath::{Matrix4, Vector3};
 
-use crate::graphics_manager::structures::{ModelMesh, Vertex};
+use crate::graphics_manager::structures::{hidden_transform, rect_mesh};
 use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
 
 // Segment order: [top, top-left, top-right, middle, bottom-left, bottom-right, bottom].
@@ -20,13 +20,6 @@ const SEGMENTS_FOR_DIGIT: [[bool; 7]; 10] = [
 ];
 
 const COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-
-// Far enough from the play field that perspective culls it.
-const OFFSCREEN: Vector3<f32> = Vector3 {
-    x: 1000.0,
-    y: 1000.0,
-    z: 0.0,
-};
 
 /// Two shared meshes — horizontal and vertical segments — registered once
 /// and reused as instances by every digit. Saves 12 buffer allocations
@@ -96,29 +89,19 @@ impl Digit {
             Vector3 { x: 0.0,    y:  s,   z: 0.0 }, // bottom
         ];
 
+        // Unlit segments are parked off-screen rather than skipped: every
+        // registered instance must produce a transform each frame, otherwise
+        // it would render at its previous position.
         (0..7)
             .map(|i| {
-                let translation = if lit[i] {
-                    self.position + offsets[i]
+                let m = if lit[i] {
+                    Matrix4::from_translation(self.position + offsets[i])
                 } else {
-                    OFFSCREEN
+                    hidden_transform()
                 };
-                (self.segments[i], Matrix4::from_translation(translation))
+                (self.segments[i], m)
             })
             .collect()
     }
 }
 
-fn rect_mesh(width: f32, height: f32) -> ModelMesh {
-    let hw = width / 2.0;
-    let hh = height / 2.0;
-    ModelMesh {
-        vertices: vec![
-            Vertex { pos: [-hw, -hh] },
-            Vertex { pos: [ hw, -hh] },
-            Vertex { pos: [ hw,  hh] },
-            Vertex { pos: [-hw,  hh] },
-        ],
-        indices: vec![0u32, 1, 2, 2, 3, 0],
-    }
-}

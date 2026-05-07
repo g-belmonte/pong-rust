@@ -116,24 +116,27 @@ fn write_camera_ubos(
     }
 }
 
+/// Field groups below mark which state survives `recreate_swapchain` and
+/// which is rebuilt. Changing this layout means revisiting that method.
 pub struct GraphicsManager {
+    // ----- Window -----
     window: winit::window::Window,
 
+    // ----- Vulkan core (created once, destroyed at shutdown) -----
     _entry: ash::Entry,
     instance: ash::Instance,
     surface_loader: ash::extensions::khr::Surface,
     surface: vk::SurfaceKHR,
     debug_utils_loader: ash::extensions::ext::DebugUtils,
     debug_merssager: vk::DebugUtilsMessengerEXT,
-
     physical_device: vk::PhysicalDevice,
     physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
     device: ash::Device,
-
     queue_family: QueueFamilyIndices,
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
 
+    // ----- Swapchain + dependent state (rebuilt on resize / OUT_OF_DATE) -----
     swapchain_loader: ash::extensions::khr::Swapchain,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
@@ -142,6 +145,7 @@ pub struct GraphicsManager {
     swapchain_imageviews: Vec<vk::ImageView>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
 
+    // ----- Pipelines + render pass (rebuilt on swapchain recreation) -----
     render_pass: vk::RenderPass,
     ubo_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
@@ -152,6 +156,7 @@ pub struct GraphicsManager {
     textured_pipeline_layout: vk::PipelineLayout,
     textured_pipeline: vk::Pipeline,
 
+    // ----- Camera UBO + descriptor pool/sets (survive swapchain recreation) -----
     // Camera UBO `(view, proj)` is shared across all models — one buffer per
     // swapchain image, one descriptor set per swapchain image. Contents are
     // rewritten only when the camera changes (init, swapchain recreation).
@@ -160,11 +165,18 @@ pub struct GraphicsManager {
     descriptor_pool: vk::DescriptorPool,
     camera_descriptor_sets: Vec<vk::DescriptorSet>,
 
+    // ----- Registered geometry, instances, and textures (survive recreation) -----
     meshes: HashMap<MeshHandle, MeshBuffers>,
     next_mesh_handle: u32,
     instances: HashMap<ModelHandle, InstanceData>,
     textured_instances: HashMap<ModelHandle, TexturedInstanceData>,
     next_handle: u32,
+    // Texture lifetime is independent of model lifetime — multiple textured
+    // models may share one texture (e.g. a font atlas with one glyph per quad).
+    textures: HashMap<TextureHandle, TextureResources>,
+    next_texture_handle: u32,
+
+    // ----- Per-frame instance buffers (survive recreation) -----
     // Per-frame solid-colour instance buffer (host-visible + coherent). Layout
     // each frame is "all instances of mesh A, then all of mesh B, ..." so each
     // per-mesh instanced draw can bind it at the right offset.
@@ -174,27 +186,26 @@ pub struct GraphicsManager {
     // pipeline. Layout each frame is "all instances of texture A, then B, ...".
     textured_instance_buffers: Vec<vk::Buffer>,
     textured_instance_buffer_memories: Vec<vk::DeviceMemory>,
-    // Shared unit quad ([-0.5..0.5]^2) used by every textured instance. Built
-    // once at construction. The vertex shader maps pos to UV via the per-instance
-    // uv_offset/uv_scale, so any sprite size and any UV rect is supported.
+
+    // ----- Shared unit quad for textured instances (survives recreation) -----
+    // Built once at construction. The vertex shader maps pos `[-0.5..0.5]^2`
+    // to UV via the per-instance uv_offset/uv_scale, so any sprite size and
+    // any UV rect is supported.
     textured_quad_vertex_buffer: vk::Buffer,
     textured_quad_vertex_memory: vk::DeviceMemory,
     textured_quad_index_buffer: vk::Buffer,
     textured_quad_index_memory: vk::DeviceMemory,
     textured_quad_index_count: u32,
 
-    // Texture lifetime is independent of model lifetime — multiple textured
-    // models may share one texture (e.g. a font atlas with one glyph per quad).
-    textures: HashMap<TextureHandle, TextureResources>,
-    next_texture_handle: u32,
+    // ----- Camera matrices (survive recreation; proj is rewritten on resize) -----
     current_view: Matrix4<f32>,
     current_proj: Matrix4<f32>,
 
+    // ----- Command buffers + sync (survive recreation) -----
     command_pool: vk::CommandPool,
     // MAX_FRAMES_IN_FLIGHT command buffers, indexed by current_frame. Re-recorded
     // each frame in draw_frame so per-instance/per-draw matrices reflect Scene state.
     command_buffers: Vec<vk::CommandBuffer>,
-
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
@@ -802,6 +813,13 @@ impl GraphicsManager {
                 .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
                 .expect("Failed to reset command buffer");
         }
+        // Draw order is load-bearing: the render pass has no depth attachment
+        // and neither pipeline blends, so command order *is* paint order.
+        // Solids first (paddles, walls, digit segments), textured second
+        // (ball sprite, label glyphs) so on-top sprites appear on top.
+        // If a future feature ever needs interleaving (e.g. textured
+        // background → solid HUD → textured tooltip), the per-pipeline
+        // batching below has to grow into a more general per-draw ordering.
         share::record_command_buffer(
             &self.device,
             command_buffer,
