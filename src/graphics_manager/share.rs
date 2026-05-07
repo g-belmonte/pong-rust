@@ -1713,6 +1713,7 @@ pub fn create_graphics_pipeline(
     render_pass: vk::RenderPass,
     swapchain_extent: vk::Extent2D,
     ubo_set_layout: vk::DescriptorSetLayout,
+    pipeline_cache: vk::PipelineCache,
 ) -> (vk::Pipeline, vk::PipelineLayout) {
     let vert_shader_module = create_shader_module(
         device,
@@ -1923,7 +1924,7 @@ pub fn create_graphics_pipeline(
     let graphics_pipelines = unsafe {
         device
             .create_graphics_pipelines(
-                vk::PipelineCache::null(),
+                pipeline_cache,
                 &graphic_pipeline_create_infos,
                 None,
             )
@@ -1943,6 +1944,7 @@ pub fn create_textured_graphics_pipeline(
     render_pass: vk::RenderPass,
     swapchain_extent: vk::Extent2D,
     textured_set_layout: vk::DescriptorSetLayout,
+    pipeline_cache: vk::PipelineCache,
 ) -> (vk::Pipeline, vk::PipelineLayout) {
     let vert_shader_module = create_shader_module(
         device,
@@ -2148,7 +2150,7 @@ pub fn create_textured_graphics_pipeline(
     let graphics_pipelines = unsafe {
         device
             .create_graphics_pipelines(
-                vk::PipelineCache::null(),
+                pipeline_cache,
                 &graphic_pipeline_create_infos,
                 None,
             )

@@ -155,6 +155,9 @@ pub struct GraphicsManager {
     textured_ubo_layout: vk::DescriptorSetLayout,
     textured_pipeline_layout: vk::PipelineLayout,
     textured_pipeline: vk::Pipeline,
+    // Persistent across runs: loaded from / saved to disk so the driver can
+    // skip shader compilation on subsequent launches.
+    pipeline_cache: vk::PipelineCache,
 
     // ----- Camera UBO + descriptor pool/sets (survive swapchain recreation) -----
     // Camera UBO `(view, proj)` is shared across all models — one buffer per
@@ -259,18 +262,27 @@ impl GraphicsManager {
         let render_pass = share::create_render_pass(&device, swapchain_stuff.swapchain_format);
         let ubo_layout = share::create_descriptor_set_layout(&device);
         let textured_ubo_layout = share::create_textured_descriptor_set_layout(&device);
+        let pipeline_cache = create_pipeline_cache(&device);
         let (graphics_pipeline, pipeline_layout) = share::create_graphics_pipeline(
             &device,
             render_pass,
             swapchain_stuff.swapchain_extent,
             ubo_layout,
+            pipeline_cache,
         );
         let (textured_pipeline, textured_pipeline_layout) = share::create_textured_graphics_pipeline(
             &device,
             render_pass,
             swapchain_stuff.swapchain_extent,
             textured_ubo_layout,
+            pipeline_cache,
         );
+        // Persist the cache now: pipeline creation above is what populates it
+        // (compiling shaders on a cold start, or filling in any state combos
+        // missing on a warm start). winit 0.20's `EventLoop::run` is `-> !` and
+        // skips destructors, so `Drop` is not a reliable place to save —
+        // writing here guarantees the disk copy is up to date for next launch.
+        save_pipeline_cache(&device, pipeline_cache);
         let swapchain_framebuffers = share::create_framebuffers(
             &device,
             render_pass,
@@ -394,6 +406,7 @@ impl GraphicsManager {
             textured_ubo_layout,
             textured_pipeline_layout,
             textured_pipeline,
+            pipeline_cache,
 
             camera_uniform_buffers,
             camera_uniform_buffers_memory,
@@ -972,6 +985,7 @@ impl GraphicsManager {
             self.render_pass,
             swapchain_stuff.swapchain_extent,
             self.ubo_layout,
+            self.pipeline_cache,
         );
         self.graphics_pipeline = graphics_pipeline;
         self.pipeline_layout = pipeline_layout;
@@ -982,6 +996,7 @@ impl GraphicsManager {
                 self.render_pass,
                 swapchain_stuff.swapchain_extent,
                 self.textured_ubo_layout,
+                self.pipeline_cache,
             );
         self.textured_pipeline = textured_pipeline;
         self.textured_pipeline_layout = textured_pipeline_layout;
@@ -1028,6 +1043,11 @@ impl Drop for GraphicsManager {
 
             self.cleanup_swapchain();
             self.device.destroy_render_pass(self.render_pass, None);
+
+            // Save before destroying — the cache is what we want persisted, not
+            // the file. Best-effort: any IO error is silently ignored.
+            save_pipeline_cache(&self.device, self.pipeline_cache);
+            self.device.destroy_pipeline_cache(self.pipeline_cache, None);
 
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
@@ -1087,6 +1107,39 @@ impl Drop for GraphicsManager {
             self.instance.destroy_instance(None);
         }
     }
+}
+
+// Pipeline cache persisted to disk so the driver can skip shader compilation
+// on subsequent launches. Vulkan validates the cache header (vendor/device/UUID)
+// and ignores incompatible blobs, so a best-effort load is safe.
+fn pipeline_cache_path() -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|d| d.join("pong-rust").join("pipeline.cache"))
+}
+
+fn create_pipeline_cache(device: &ash::Device) -> vk::PipelineCache {
+    let initial = pipeline_cache_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .unwrap_or_default();
+    let create_info = vk::PipelineCacheCreateInfo::builder()
+        .initial_data(&initial)
+        .build();
+    unsafe {
+        device
+            .create_pipeline_cache(&create_info, None)
+            .expect("Failed to create pipeline cache")
+    }
+}
+
+fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache) {
+    let Some(path) = pipeline_cache_path() else { return };
+    let data = match unsafe { device.get_pipeline_cache_data(cache) } {
+        Ok(data) => data,
+        Err(_) => return,
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, data);
 }
 
 // Persistent host-visible+coherent instance buffers (one per frame in flight).
