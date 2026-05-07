@@ -3,6 +3,7 @@ mod digit;
 mod graphics_manager;
 mod paddle;
 mod scene;
+mod text;
 mod wall;
 
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
@@ -68,9 +69,11 @@ impl PongRust {
                     self.scene.handle_action(scene::Action::GameOver);
                     if self.scene.match_over() {
                         self.game_phase = GamePhase::End;
+                        self.scene.set_game_over_visible(true);
                     } else {
                         self.scene.handle_action(scene::Action::ResetRound);
                         self.game_phase = GamePhase::Start;
+                        self.scene.set_welcome_visible(true);
                     }
                 }
                 self.scene.update(delta_time);
@@ -102,12 +105,15 @@ impl PongRust {
                 match self.game_phase {
                     GamePhase::Start => {
                         self.game_phase = GamePhase::Playing;
+                        self.scene.set_welcome_visible(false);
                         Some(PongRustActions::SceneAction(scene::Action::Kickoff))
 
                     },
                     GamePhase::Playing => None,
                     GamePhase::End => {
                         self.game_phase = GamePhase::Start;
+                        self.scene.set_game_over_visible(false);
+                        self.scene.set_welcome_visible(true);
                         Some(PongRustActions::SceneAction(scene::Action::ResetGame))
                     }
 

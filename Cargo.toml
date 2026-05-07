@@ -11,6 +11,7 @@ cgmath    = "0.17.0"
 memoffset = "0.5.1"
 rand      = "0.8.5"
 image     = { version = "0.23", default-features = false, features = ["png"] }
+fontdue   = "0.7"
 
 [dependencies.bitflags]
 version = ">= 1.0.4"

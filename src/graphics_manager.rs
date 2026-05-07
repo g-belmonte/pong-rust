@@ -435,6 +435,40 @@ impl GraphicsManager {
         handle
     }
 
+    pub fn register_texture_rgba(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> TextureHandle {
+        let handle = TextureHandle(self.next_texture_handle);
+        self.next_texture_handle += 1;
+
+        let (image, memory) = share::upload_rgba_image(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            width,
+            height,
+            rgba,
+        );
+        let view = share::create_image_view(
+            &self.device,
+            image,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageAspectFlags::COLOR,
+            1,
+        );
+        let sampler = share::create_texture_sampler(&self.device);
+
+        self.textures.insert(
+            handle,
+            TextureResources { image, memory, view, sampler },
+        );
+        handle
+    }
+
     #[allow(dead_code)]
     pub fn unregister_texture(&mut self, handle: TextureHandle) {
         if let Some(tex) = self.textures.remove(&handle) {

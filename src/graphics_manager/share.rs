@@ -1307,6 +1307,32 @@ pub fn load_texture_image(
     let rgba = decoded.to_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
     let pixels = rgba.into_raw();
+    let (image, memory) = upload_rgba_image(
+        device,
+        device_memory_properties,
+        command_pool,
+        submit_queue,
+        width,
+        height,
+        &pixels,
+    );
+    (image, memory, width, height)
+}
+
+pub fn upload_rgba_image(
+    device: &ash::Device,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> (vk::Image, vk::DeviceMemory) {
+    assert_eq!(
+        pixels.len(),
+        (width as usize) * (height as usize) * 4,
+        "upload_rgba_image: pixels length must be width*height*4"
+    );
     let image_size = pixels.len() as vk::DeviceSize;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
@@ -1402,7 +1428,7 @@ pub fn load_texture_image(
         device.free_memory(staging_buffer_memory, None);
     }
 
-    (texture_image, texture_image_memory, width, height)
+    (texture_image, texture_image_memory)
 }
 
 #[allow(dead_code)]

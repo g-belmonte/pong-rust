@@ -6,7 +6,14 @@ use crate::ball::Ball;
 use crate::digit::Digit;
 use crate::graphics_manager::{GraphicsManager, ModelHandle};
 use crate::paddle::Paddle;
+use crate::text::{FontAtlas, TextLabel};
 use crate::wall::Wall;
+
+const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+const FONT_RASTER_PX: f32 = 48.0;
+// Pixels per world unit. 48 px / 0.05 = 960 px per world unit gives "Welcome"
+// (~340 px wide) ~1.8 world units across — comfortably inside the play field.
+const FONT_WORLD_SCALE: f32 = 0.005;
 
 pub const WINNING_SCORE: u8 = 9;
 
@@ -20,6 +27,12 @@ pub struct Scene {
     pub right_digit: Digit,
     pub left_score: u8,
     pub right_score: u8,
+    // Atlas owns the font texture; labels reference it via TextureHandle.
+    // FUTURE (CLAUDE.md option-B follow-up): move GamePhase into Scene and
+    // toggle label visibility internally on phase transitions.
+    pub _font_atlas: FontAtlas,
+    pub welcome_label: TextLabel,
+    pub game_over_label: TextLabel,
 }
 
 mod color {
@@ -43,6 +56,24 @@ pub enum Action {
 
 impl Scene {
     pub fn new(gm: &mut GraphicsManager) -> Self {
+        let font_atlas = FontAtlas::build(gm, FONT_BYTES, FONT_RASTER_PX);
+        // Labels sit inside the play field, vertically centred.
+        let welcome_label = TextLabel::new(
+            gm,
+            &font_atlas,
+            "Welcome",
+            Vector3 { x: 0.0, y: -1.2, z: 0.0 },
+            FONT_WORLD_SCALE,
+        );
+        let mut game_over_label = TextLabel::new(
+            gm,
+            &font_atlas,
+            "Game Over",
+            Vector3 { x: 0.0, y: -1.2, z: 0.0 },
+            FONT_WORLD_SCALE,
+        );
+        game_over_label.set_visible(false);
+
         Self {
             left_paddle: Paddle::new(
                 gm,
@@ -107,7 +138,18 @@ impl Scene {
             ),
             left_score: 0,
             right_score: 0,
+            _font_atlas: font_atlas,
+            welcome_label,
+            game_over_label,
         }
+    }
+
+    pub fn set_welcome_visible(&mut self, visible: bool) {
+        self.welcome_label.set_visible(visible);
+    }
+
+    pub fn set_game_over_visible(&mut self, visible: bool) {
+        self.game_over_label.set_visible(visible);
     }
 
     pub fn get_model_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
@@ -135,6 +177,8 @@ impl Scene {
         ];
         transforms.extend(self.left_digit.get_model_transforms());
         transforms.extend(self.right_digit.get_model_transforms());
+        transforms.extend(self.welcome_label.get_model_transforms());
+        transforms.extend(self.game_over_label.get_model_transforms());
         transforms
     }
 
