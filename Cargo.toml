@@ -10,6 +10,7 @@ num       = "0.2"
 cgmath    = "0.17.0"
 memoffset = "0.5.1"
 rand      = "0.8.5"
+image     = { version = "0.23", default-features = false, features = ["png"] }
 
 [dependencies.bitflags]
 version = ">= 1.0.4"

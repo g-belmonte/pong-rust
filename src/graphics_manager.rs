@@ -21,10 +21,27 @@ use ash::vk;
 use std::collections::HashMap;
 use std::ptr;
 
-use self::structures::{ModelMesh, UniformBufferObject};
+use self::structures::{ModelMesh, TexturedModelMesh, UniformBufferObject};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct ModelHandle(u32);
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TextureHandle(u32);
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[allow(dead_code)]
+pub enum PipelineKind {
+    SolidColour,
+    Textured,
+}
+
+pub struct TextureResources {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+}
 
 pub struct ModelBuffers {
     vertex_buffer: vk::Buffer,
@@ -37,6 +54,12 @@ pub struct ModelBuffers {
     // documented behaviour: a registered handle missing from `transforms` redraws
     // with whatever it was last given (identity at registration).
     last_model: Matrix4<f32>,
+
+    pipeline: PipelineKind,
+    // Textured-only: one descriptor set per swapchain image, binding the per-image
+    // camera UBO + this model's texture (image view + sampler from `TextureResources`).
+    // Empty for SolidColour models — they share `camera_descriptor_sets`.
+    descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 fn build_model_buffers(
@@ -58,16 +81,36 @@ fn build_model_buffers(
         index_buffer_memory,
         index_count: mesh.indices.len() as u32,
         last_model: Matrix4::from_scale(1.0),
+        pipeline: PipelineKind::SolidColour,
+        descriptor_sets: Vec::new(),
     }
 }
 
-fn destroy_model_buffers(device: &ash::Device, buffers: &ModelBuffers) {
+fn destroy_model_buffers(
+    device: &ash::Device,
+    descriptor_pool: vk::DescriptorPool,
+    buffers: &ModelBuffers,
+) {
     unsafe {
+        if !buffers.descriptor_sets.is_empty() {
+            // Pool was created with FREE_DESCRIPTOR_SET so this is legal.
+            device.free_descriptor_sets(descriptor_pool, &buffers.descriptor_sets);
+        }
+
         device.destroy_buffer(buffers.index_buffer, None);
         device.free_memory(buffers.index_buffer_memory, None);
 
         device.destroy_buffer(buffers.vertex_buffer, None);
         device.free_memory(buffers.vertex_buffer_memory, None);
+    }
+}
+
+fn destroy_texture_resources(device: &ash::Device, tex: &TextureResources) {
+    unsafe {
+        device.destroy_sampler(tex.sampler, None);
+        device.destroy_image_view(tex.view, None);
+        device.destroy_image(tex.image, None);
+        device.free_memory(tex.memory, None);
     }
 }
 
@@ -120,6 +163,12 @@ pub struct GraphicsManager {
     ubo_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
+    // Second pipeline for textured (sampled image) draws. Coexists with the
+    // solid-colour pipeline in the same render pass; per-model dispatch in
+    // `record_command_buffer` picks one based on `ModelBuffers::pipeline`.
+    textured_ubo_layout: vk::DescriptorSetLayout,
+    textured_pipeline_layout: vk::PipelineLayout,
+    textured_pipeline: vk::Pipeline,
 
     // Camera UBO `(view, proj)` is shared across all models — one buffer per
     // swapchain image, one descriptor set per swapchain image. Contents are
@@ -131,6 +180,10 @@ pub struct GraphicsManager {
 
     model_buffers: HashMap<ModelHandle, ModelBuffers>,
     next_handle: u32,
+    // Texture lifetime is independent of model lifetime — multiple textured
+    // models may share one texture (e.g. a font atlas with one glyph per quad).
+    textures: HashMap<TextureHandle, TextureResources>,
+    next_texture_handle: u32,
     current_view: Matrix4<f32>,
     current_proj: Matrix4<f32>,
 
@@ -192,11 +245,18 @@ impl GraphicsManager {
         );
         let render_pass = share::create_render_pass(&device, swapchain_stuff.swapchain_format);
         let ubo_layout = share::create_descriptor_set_layout(&device);
+        let textured_ubo_layout = share::create_textured_descriptor_set_layout(&device);
         let (graphics_pipeline, pipeline_layout) = share::create_graphics_pipeline(
             &device,
             render_pass,
             swapchain_stuff.swapchain_extent,
             ubo_layout,
+        );
+        let (textured_pipeline, textured_pipeline_layout) = share::create_textured_graphics_pipeline(
+            &device,
+            render_pass,
+            swapchain_stuff.swapchain_extent,
+            textured_ubo_layout,
         );
         let swapchain_framebuffers = share::create_framebuffers(
             &device,
@@ -227,7 +287,8 @@ impl GraphicsManager {
             &physical_device_memory_properties,
             swapchain_image_count,
         );
-        let descriptor_pool = share::create_descriptor_pool(&device, swapchain_image_count);
+        let descriptor_pool =
+            share::create_descriptor_pool(&device, swapchain_image_count, MAX_TEXTURED_MODELS);
         let camera_descriptor_sets = share::create_descriptor_sets(
             &device,
             descriptor_pool,
@@ -280,6 +341,9 @@ impl GraphicsManager {
             render_pass,
             graphics_pipeline,
             ubo_layout,
+            textured_ubo_layout,
+            textured_pipeline_layout,
+            textured_pipeline,
 
             camera_uniform_buffers,
             camera_uniform_buffers_memory,
@@ -288,6 +352,8 @@ impl GraphicsManager {
 
             model_buffers,
             next_handle,
+            textures: HashMap::new(),
+            next_texture_handle: 0,
             current_view,
             current_proj,
 
@@ -337,8 +403,100 @@ impl GraphicsManager {
                     .device_wait_idle()
                     .expect("device_wait_idle failed in unregister_model");
             }
-            destroy_model_buffers(&self.device, &buffers);
+            destroy_model_buffers(&self.device, self.descriptor_pool, &buffers);
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
+        let handle = TextureHandle(self.next_texture_handle);
+        self.next_texture_handle += 1;
+
+        let (image, memory, _w, _h) = share::load_texture_image(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            png_bytes,
+        );
+        let view = share::create_image_view(
+            &self.device,
+            image,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageAspectFlags::COLOR,
+            1,
+        );
+        let sampler = share::create_texture_sampler(&self.device);
+
+        self.textures.insert(
+            handle,
+            TextureResources { image, memory, view, sampler },
+        );
+        handle
+    }
+
+    #[allow(dead_code)]
+    pub fn unregister_texture(&mut self, handle: TextureHandle) {
+        if let Some(tex) = self.textures.remove(&handle) {
+            unsafe {
+                self.device
+                    .device_wait_idle()
+                    .expect("device_wait_idle failed in unregister_texture");
+            }
+            destroy_texture_resources(&self.device, &tex);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn register_textured_model_with(
+        &mut self,
+        mesh: &TexturedModelMesh,
+        texture: TextureHandle,
+    ) -> ModelHandle {
+        let tex = self
+            .textures
+            .get(&texture)
+            .expect("register_textured_model_with received unknown TextureHandle");
+
+        let (vertex_buffer, vertex_buffer_memory) = share::create_vertex_buffer(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            &mesh.vertices,
+        );
+        let (index_buffer, index_buffer_memory) = share::create_index_buffer(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            &mesh.indices,
+        );
+
+        let descriptor_sets = share::create_textured_descriptor_sets(
+            &self.device,
+            self.descriptor_pool,
+            self.textured_ubo_layout,
+            &self.camera_uniform_buffers,
+            tex.view,
+            tex.sampler,
+        );
+
+        let buffers = ModelBuffers {
+            vertex_buffer,
+            vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
+            index_count: mesh.indices.len() as u32,
+            last_model: Matrix4::from_scale(1.0),
+            pipeline: PipelineKind::Textured,
+            descriptor_sets,
+        };
+
+        let handle = ModelHandle(self.next_handle);
+        self.next_handle += 1;
+        self.model_buffers.insert(handle, buffers);
+        handle
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
@@ -384,9 +542,28 @@ impl GraphicsManager {
         // blending, so overdraw correctness depends on this stable order.
         let mut entries: Vec<_> = self.model_buffers.iter().collect();
         entries.sort_by_key(|(handle, _)| **handle);
-        let draws: Vec<(&ModelBuffers, Matrix4<f32>)> = entries
+        let camera_set = self.camera_descriptor_sets[image_index as usize];
+        let draws: Vec<share::Draw> = entries
             .iter()
-            .map(|(_, buffers)| (*buffers, buffers.last_model))
+            .map(|(_, buffers)| {
+                let (pipeline, pipeline_layout, descriptor_set) = match buffers.pipeline {
+                    PipelineKind::SolidColour => {
+                        (self.graphics_pipeline, self.pipeline_layout, camera_set)
+                    }
+                    PipelineKind::Textured => (
+                        self.textured_pipeline,
+                        self.textured_pipeline_layout,
+                        buffers.descriptor_sets[image_index as usize],
+                    ),
+                };
+                share::Draw {
+                    pipeline,
+                    pipeline_layout,
+                    descriptor_set,
+                    buffers: *buffers,
+                    model_matrix: buffers.last_model,
+                }
+            })
             .collect();
 
         let command_buffer = self.command_buffers[self.current_frame];
@@ -401,9 +578,6 @@ impl GraphicsManager {
             self.swapchain_framebuffers[image_index as usize],
             self.render_pass,
             self.swapchain_extent,
-            self.graphics_pipeline,
-            self.pipeline_layout,
-            self.camera_descriptor_sets[image_index as usize],
             &draws,
         );
 
@@ -525,6 +699,16 @@ impl GraphicsManager {
         self.graphics_pipeline = graphics_pipeline;
         self.pipeline_layout = pipeline_layout;
 
+        let (textured_pipeline, textured_pipeline_layout) =
+            share::create_textured_graphics_pipeline(
+                &self.device,
+                self.render_pass,
+                swapchain_stuff.swapchain_extent,
+                self.textured_ubo_layout,
+            );
+        self.textured_pipeline = textured_pipeline;
+        self.textured_pipeline_layout = textured_pipeline_layout;
+
         self.swapchain_framebuffers = share::create_framebuffers(
             &self.device,
             self.render_pass,
@@ -541,6 +725,9 @@ impl GraphicsManager {
             self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_pipeline(self.textured_pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.textured_pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
             for &image_view in self.swapchain_imageviews.iter() {
                 self.device.destroy_image_view(image_view, None);
@@ -568,7 +755,10 @@ impl Drop for GraphicsManager {
                 .free_command_buffers(self.command_pool, &self.command_buffers);
 
             for buffers in self.model_buffers.values() {
-                destroy_model_buffers(&self.device, buffers);
+                destroy_model_buffers(&self.device, self.descriptor_pool, buffers);
+            }
+            for tex in self.textures.values() {
+                destroy_texture_resources(&self.device, tex);
             }
 
             self.device
@@ -582,6 +772,8 @@ impl Drop for GraphicsManager {
 
             self.device
                 .destroy_descriptor_set_layout(self.ubo_layout, None);
+            self.device
+                .destroy_descriptor_set_layout(self.textured_ubo_layout, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
 

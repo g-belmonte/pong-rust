@@ -56,6 +56,13 @@ pub struct ModelMesh {
     pub indices: Vec<u32>,
 }
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct TexturedModelMesh {
+    pub vertices: Vec<TexturedVertex>,
+    pub indices: Vec<u32>,
+}
+
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]
 pub struct UniformBufferObject {
@@ -91,6 +98,39 @@ impl Vertex {
                 location: 1,
                 format: vk::Format::R32G32B32_SFLOAT,
                 offset: offset_of!(Vertex, color) as u32,
+            },
+        ]
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Debug, Copy)]
+pub struct TexturedVertex {
+    pub pos: [f32; 2],
+    pub uv: [f32; 2],
+}
+impl TexturedVertex {
+    pub fn get_binding_description() -> [vk::VertexInputBindingDescription; 1] {
+        [vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: ::std::mem::size_of::<TexturedVertex>() as u32,
+            input_rate: vk::VertexInputRate::VERTEX,
+        }]
+    }
+
+    pub fn get_attribute_descriptions() -> [vk::VertexInputAttributeDescription; 2] {
+        [
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 0,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: offset_of!(TexturedVertex, pos) as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 1,
+                format: vk::Format::R32G32_SFLOAT,
+                offset: offset_of!(TexturedVertex, uv) as u32,
             },
         ]
     }

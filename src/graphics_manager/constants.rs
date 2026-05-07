@@ -21,6 +21,12 @@ pub const DEVICE_EXTENSIONS: DeviceExtension = DeviceExtension {
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 pub const IS_PAINT_FPS_COUNTER: bool = true;
 
+// Caps how many textured models can be live simultaneously: bounds the
+// descriptor-pool size set up in `share::create_descriptor_pool`. Picked with
+// step 9 (per-glyph quads for text labels) in mind — bump if you ever hit the
+// allocation failure on `register_textured_model_with`.
+pub const MAX_TEXTURED_MODELS: usize = 256;
+
 impl DeviceExtension {
     pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
         [ash::extensions::khr::Swapchain::name().as_ptr()]
