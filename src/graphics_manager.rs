@@ -407,7 +407,6 @@ impl GraphicsManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
         let handle = TextureHandle(self.next_texture_handle);
         self.next_texture_handle += 1;

@@ -37,7 +37,6 @@ pub struct Scene {
 
 mod color {
     pub const RED: [f32; 3] = [1.0, 0.0, 0.0];
-    pub const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
     pub const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
 }
 
@@ -117,7 +116,7 @@ impl Scene {
                 0.2,
                 10.0,
             ),
-            ball: Ball::new(gm, Vector3::zero(), 0.2, color::GREEN),
+            ball: Ball::new(gm, Vector3::zero(), 0.2),
             left_digit: Digit::new(
                 gm,
                 Vector3 {
