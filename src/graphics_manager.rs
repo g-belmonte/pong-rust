@@ -347,7 +347,8 @@ impl GraphicsManager {
 
         let command_buffers =
             share::allocate_command_buffers(&device, command_pool, MAX_FRAMES_IN_FLIGHT as u32);
-        let sync_ojbects = share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
+        let sync_ojbects =
+            share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT, swapchain_image_count);
 
         GraphicsManager {
             window,
@@ -815,7 +816,10 @@ impl GraphicsManager {
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+        // Per-image, not per-frame: presentation may still be using this
+        // semaphore on whichever swapchain image was previously paired with
+        // current_frame. Indexing by image_index avoids that collision.
+        let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
 
         let submit_infos = [vk::SubmitInfo {
             s_type: vk::StructureType::SUBMIT_INFO,
@@ -905,6 +909,20 @@ impl GraphicsManager {
         self.swapchain_format = swapchain_stuff.swapchain_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
+        // render_finished_semaphores are indexed by swapchain image; rebuild
+        // them if the new swapchain has a different image count. device_wait_idle
+        // above guarantees no submission still references the old semaphores.
+        let new_image_count = self.swapchain_images.len();
+        if new_image_count != self.render_finished_semaphores.len() {
+            unsafe {
+                for &s in self.render_finished_semaphores.iter() {
+                    self.device.destroy_semaphore(s, None);
+                }
+            }
+            self.render_finished_semaphores =
+                share::create_render_finished_semaphores(&self.device, new_image_count);
+        }
+
         // Aspect ratio changed — push the new projection through the shared UBO.
         self.current_proj = cgmath::perspective(
             Deg(45.0),
@@ -976,9 +994,10 @@ impl Drop for GraphicsManager {
             for i in 0..MAX_FRAMES_IN_FLIGHT {
                 self.device
                     .destroy_semaphore(self.image_available_semaphores[i], None);
-                self.device
-                    .destroy_semaphore(self.render_finished_semaphores[i], None);
                 self.device.destroy_fence(self.in_flight_fences[i], None);
+            }
+            for &s in self.render_finished_semaphores.iter() {
+                self.device.destroy_semaphore(s, None);
             }
 
             self.cleanup_swapchain();

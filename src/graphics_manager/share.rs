@@ -939,7 +939,16 @@ pub fn record_command_buffer(
     }
 }
 
-pub fn create_sync_objects(device: &ash::Device, max_frame_in_flight: usize) -> SyncObjects {
+// `image_available_semaphores` and `inflight_fences` are per frame-in-flight.
+// `render_finished_semaphores` are per swapchain image — presentation reuse is
+// governed by swapchain image index, so signaling one of N per-frame semaphores
+// while the previous present on the same image is still in flight trips
+// VUID-vkQueueSubmit-pSignalSemaphores-00067.
+pub fn create_sync_objects(
+    device: &ash::Device,
+    max_frame_in_flight: usize,
+    swapchain_image_count: usize,
+) -> SyncObjects {
     let mut sync_objects = SyncObjects {
         image_available_semaphores: vec![],
         render_finished_semaphores: vec![],
@@ -963,9 +972,6 @@ pub fn create_sync_objects(device: &ash::Device, max_frame_in_flight: usize) -> 
             let image_available_semaphore = device
                 .create_semaphore(&semaphore_create_info, None)
                 .expect("Failed to create Semaphore Object!");
-            let render_finished_semaphore = device
-                .create_semaphore(&semaphore_create_info, None)
-                .expect("Failed to create Semaphore Object!");
             let inflight_fence = device
                 .create_fence(&fence_create_info, None)
                 .expect("Failed to create Fence Object!");
@@ -973,14 +979,44 @@ pub fn create_sync_objects(device: &ash::Device, max_frame_in_flight: usize) -> 
             sync_objects
                 .image_available_semaphores
                 .push(image_available_semaphore);
-            sync_objects
-                .render_finished_semaphores
-                .push(render_finished_semaphore);
             sync_objects.inflight_fences.push(inflight_fence);
         }
     }
 
+    for _ in 0..swapchain_image_count {
+        unsafe {
+            let render_finished_semaphore = device
+                .create_semaphore(&semaphore_create_info, None)
+                .expect("Failed to create Semaphore Object!");
+            sync_objects
+                .render_finished_semaphores
+                .push(render_finished_semaphore);
+        }
+    }
+
     sync_objects
+}
+
+pub fn create_render_finished_semaphores(
+    device: &ash::Device,
+    count: usize,
+) -> Vec<vk::Semaphore> {
+    let semaphore_create_info = vk::SemaphoreCreateInfo {
+        s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::SemaphoreCreateFlags::empty(),
+    };
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        unsafe {
+            out.push(
+                device
+                    .create_semaphore(&semaphore_create_info, None)
+                    .expect("Failed to create Semaphore Object!"),
+            );
+        }
+    }
+    out
 }
 
 pub fn create_vertex_buffer<T>(
