@@ -1,27 +1,26 @@
-use cgmath::Vector3;
+use std::any::Any;
 
-use engine::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
+use engine::scene::Behaviour;
 
-const COLOR: [f32; 3] = [0.0, 1.0, 0.0];
-
-pub struct Wall {
-    pub model_handle: ModelHandle,
-    pub position: Vector3<f32>,
+/// Wall behaviour. Carries the wall's height so neighbouring behaviours
+/// (paddles, ball) can read it via `scene.behaviour::<WallBehaviour>(id)`
+/// without needing a separate bounds field on `Object`. Walls are static —
+/// no `update` / `on_event` hooks.
+pub struct WallBehaviour {
     pub height: f32,
 }
 
-impl Wall {
-    pub fn with_mesh(
-        gm: &mut GraphicsManager,
-        mesh: MeshHandle,
-        position: Vector3<f32>,
-        height: f32,
-    ) -> Self {
-        let model_handle = gm.register_instance(mesh, COLOR);
-        Self {
-            model_handle,
-            position,
-            height,
-        }
+impl WallBehaviour {
+    pub fn new(height: f32) -> Self {
+        Self { height }
+    }
+}
+
+impl Behaviour for WallBehaviour {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashMap;
 
 use cgmath::{Matrix4, Vector3};
@@ -6,6 +7,7 @@ use fontdue::{Font, FontSettings};
 use engine::graphics_manager::structures::hidden_transform;
 use engine::graphics_manager::{GraphicsManager, ModelHandle};
 use engine::resources::{Resources, Texture};
+use engine::scene::Behaviour;
 
 const PRINTABLE_ASCII_START: u32 = 32;
 const PRINTABLE_ASCII_END: u32 = 126;
@@ -137,31 +139,32 @@ impl FontAtlas {
     }
 }
 
-// Per-glyph state. The instance handle drives a single textured-instance draw
-// (every glyph in the label shares the atlas texture, so they batch into one
-// `vkCmdDrawIndexed`). `local_offset` is the centre of the glyph in label-local
-// world coords; `world_size` is the glyph's scaled width/height.
+// Per-glyph state. `local_offset` is the centre of the glyph in label-local
+// world coords; `world_size` is the glyph's scaled width/height. The instance
+// handle drives one of the textured-pipeline batch entries — every glyph in
+// every label sharing the same atlas folds into a single `vkCmdDrawIndexed`.
 struct GlyphInstance {
     handle: ModelHandle,
     local_offset: Vector3<f32>,
     world_size: (f32, f32),
 }
 
-pub struct TextLabel {
+/// Multi-instance label behaviour. The parent `Object`'s transform positions
+/// the label as a whole; per-glyph local offsets + sizes compose against it
+/// in `collect_renderables`. Visibility uses the engine-standard parking trick.
+pub struct TextLabelBehaviour {
     glyphs: Vec<GlyphInstance>,
-    pub position: Vector3<f32>,
     pub visible: bool,
 }
 
-impl TextLabel {
-    /// Build a label centred horizontally and vertically at `position`.
-    /// `scale` converts atlas pixels to world units (e.g. 0.01 = 100 px / world unit).
+impl TextLabelBehaviour {
+    /// `scale` converts atlas pixels to world units (e.g. 0.005 ≈ 200 px/world).
     pub fn new(
         gm: &mut GraphicsManager,
         atlas: &FontAtlas,
         text: &str,
-        position: Vector3<f32>,
         scale: f32,
+        visible: bool,
     ) -> Self {
         let total_advance: f32 = text
             .chars()
@@ -169,8 +172,9 @@ impl TextLabel {
             .map(|g| g.advance)
             .sum();
 
-        // Line vertically centred: baseline placed so the (ascent..descent) span
-        // straddles y=0 in label-local pixel space (positive Y is downwards).
+        // Vertically centre the line on the parent transform: place baseline
+        // so (ascent..descent) straddles y=0 in label-local pixel space
+        // (positive Y is downwards).
         let baseline_y_local = (atlas.ascent + atlas.descent) / 2.0;
         let mut pen_x = -total_advance / 2.0;
 
@@ -191,17 +195,14 @@ impl TextLabel {
 
                 let uv_offset = g.uv_min;
                 let uv_scale = [g.uv_max[0] - g.uv_min[0], g.uv_max[1] - g.uv_min[1]];
-                let handle = gm.register_textured_instance(atlas.texture.handle(), uv_offset, uv_scale);
+                let handle =
+                    gm.register_textured_instance(atlas.texture.handle(), uv_offset, uv_scale);
 
-                // Centre of the glyph rect in label-local coords. The unit quad
-                // is [-0.5..0.5]^2, so per-frame model = Translate(label_pos +
-                // glyph_centre) * Scale(w, h) maps it onto the glyph's world rect.
                 let local_offset = Vector3 {
                     x: tlx + w * 0.5,
                     y: tly + h * 0.5,
                     z: 0.0,
                 };
-
                 glyphs.push(GlyphInstance {
                     handle,
                     local_offset,
@@ -211,31 +212,42 @@ impl TextLabel {
             pen_x += g.advance;
         }
 
-        Self {
-            glyphs,
-            position,
-            visible: true,
-        }
+        Self { glyphs, visible }
     }
 
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
     }
+}
 
-    pub fn get_model_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
-        // Hidden labels park every glyph off-screen rather than dropping
-        // the transforms — see `hidden_transform` for the rationale.
-        self.glyphs
-            .iter()
-            .map(|g| {
-                let m = if self.visible {
-                    Matrix4::from_translation(self.position + g.local_offset)
-                        * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0)
-                } else {
-                    hidden_transform()
-                };
-                (g.handle, m)
-            })
-            .collect()
+impl Behaviour for TextLabelBehaviour {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn collect_renderables(
+        &self,
+        parent_matrix: Matrix4<f32>,
+        out: &mut Vec<(ModelHandle, Matrix4<f32>)>,
+    ) {
+        for g in &self.glyphs {
+            let m = if self.visible {
+                parent_matrix
+                    * Matrix4::from_translation(g.local_offset)
+                    * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0)
+            } else {
+                hidden_transform()
+            };
+            out.push((g.handle, m));
+        }
+    }
+
+    fn on_despawn(&mut self, gm: &mut GraphicsManager) {
+        for g in &self.glyphs {
+            gm.unregister_textured_instance(g.handle);
+        }
     }
 }
