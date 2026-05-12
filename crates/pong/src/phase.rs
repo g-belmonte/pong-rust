@@ -9,8 +9,9 @@ use std::any::Any;
 
 use cgmath::Vector3;
 
+use engine::input::KeyCode;
 use engine::resources::Mesh;
-use engine::scene::{Behaviour, Event, KeyCode, ObjectId, UpdateCtx};
+use engine::scene::{Behaviour, ObjectId, UpdateCtx};
 
 use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
@@ -126,10 +127,16 @@ impl Behaviour for PhaseController {
         self
     }
 
-    fn on_event(&mut self, ctx: &mut UpdateCtx, event: &Event) {
-        match event {
-            Event::KeyPressed(KeyCode::Escape) => ctx.request_exit(),
-            Event::KeyPressed(KeyCode::Space) => match self.phase {
+    fn update(&mut self, ctx: &mut UpdateCtx) {
+        // Edge inputs: Escape exits, Space drives phase transitions. Polled
+        // from `update` (not `fixed_update`) so a tapped Space is consumed
+        // once per frame, not once per fixed substep.
+        if ctx.input.was_just_pressed(KeyCode::Escape) {
+            ctx.request_exit();
+            return;
+        }
+        if ctx.input.was_just_pressed(KeyCode::Space) {
+            match self.phase {
                 GamePhase::Start => {
                     self.phase = GamePhase::Playing;
                     Self::set_label_visible(ctx, self.welcome_label, false);
@@ -156,12 +163,9 @@ impl Behaviour for PhaseController {
                         [self.left_paddle, self.right_paddle],
                     );
                 }
-            },
-            _ => {}
+            }
         }
-    }
 
-    fn update(&mut self, ctx: &mut UpdateCtx) {
         if self.phase != GamePhase::Playing {
             return;
         }

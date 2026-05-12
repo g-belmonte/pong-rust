@@ -83,7 +83,7 @@ impl Behaviour for BallBehaviour {
         self
     }
 
-    fn update(&mut self, ctx: &mut UpdateCtx) {
+    fn fixed_update(&mut self, ctx: &mut UpdateCtx) {
         // Snapshot the scene state the ball reacts to. Reading is cheap and
         // avoids a re-borrow against `ctx.scene` after we take &mut for self.
         let top_y = ctx
@@ -124,82 +124,69 @@ impl Behaviour for BallBehaviour {
                 (pos.x, pos.y, w / 2.0, h / 2.0)
             });
 
-        let (mut x, mut y) = match ctx.scene.get(ctx.self_id) {
+        let (x, y) = match ctx.scene.get(ctx.self_id) {
             Some(obj) => (obj.transform.position.x, obj.transform.position.y),
             None => return,
         };
         let br = self.side_length / 2.0;
+        let dt = ctx.time.delta_time();
 
-        // Substep so one fast tick cannot tunnel through a paddle. Step size
-        // is bounded by the smaller of the two paddle widths.
-        let smallest_half_w = paddles[0].2.min(paddles[1].2);
-        let speed = (self.velocity.x.powi(2) + self.velocity.y.powi(2)).sqrt();
-        let travel = speed * ctx.time;
-        let n = if travel > 0.0 && smallest_half_w > 0.0 {
-            ((travel / (smallest_half_w * 2.0)).ceil() as u32).max(1)
-        } else {
-            1
-        };
-        let sub_dt = ctx.time / n as f32;
+        // No substep: the fixed step (~8.3 ms at 120 Hz) is small enough that
+        // `dt * |v|` cannot exceed the paddle width at any speed Pong uses.
+        // The Phase 2 substep loop is gone — that's the headline win of
+        // Phase 3.
+        let mut new_x = x + dt * self.velocity.x;
+        let mut new_y = y + dt * self.velocity.y;
 
-        for _ in 0..n {
-            let mut new_x = x + sub_dt * self.velocity.x;
-            let mut new_y = y + sub_dt * self.velocity.y;
+        // Walls (positive Y is downwards, so upper has smaller y).
+        if new_y - br < upper {
+            new_y = upper + br;
+            if self.velocity.y < 0.0 {
+                self.velocity.y = -self.velocity.y;
+            }
+        } else if new_y + br > lower {
+            new_y = lower - br;
+            if self.velocity.y > 0.0 {
+                self.velocity.y = -self.velocity.y;
+            }
+        }
 
-            // Walls (positive Y is downwards, so upper has smaller y).
-            if new_y - br < upper {
-                new_y = upper + br;
-                if self.velocity.y < 0.0 {
-                    self.velocity.y = -self.velocity.y;
+        // Paddles. Reflect on the axis with the smaller penetration depth.
+        for &(px, py, hpw, hph) in &paddles {
+            let overlap_x = (new_x + br).min(px + hpw) - (new_x - br).max(px - hpw);
+            let overlap_y = (new_y + br).min(py + hph) - (new_y - br).max(py - hph);
+            if overlap_x <= 0.0 || overlap_y <= 0.0 {
+                continue;
+            }
+            if overlap_x < overlap_y {
+                if new_x < px {
+                    new_x -= overlap_x;
+                    if self.velocity.x > 0.0 {
+                        self.velocity.x = -self.velocity.x;
+                    }
+                } else {
+                    new_x += overlap_x;
+                    if self.velocity.x < 0.0 {
+                        self.velocity.x = -self.velocity.x;
+                    }
                 }
-            } else if new_y + br > lower {
-                new_y = lower - br;
+            } else if new_y < py {
+                new_y -= overlap_y;
                 if self.velocity.y > 0.0 {
                     self.velocity.y = -self.velocity.y;
                 }
-            }
-
-            // Paddles. Reflect on the axis with the smaller penetration depth.
-            for &(px, py, hpw, hph) in &paddles {
-                let overlap_x = (new_x + br).min(px + hpw) - (new_x - br).max(px - hpw);
-                let overlap_y = (new_y + br).min(py + hph) - (new_y - br).max(py - hph);
-                if overlap_x <= 0.0 || overlap_y <= 0.0 {
-                    continue;
+            } else {
+                new_y += overlap_y;
+                if self.velocity.y < 0.0 {
+                    self.velocity.y = -self.velocity.y;
                 }
-                if overlap_x < overlap_y {
-                    if new_x < px {
-                        new_x -= overlap_x;
-                        if self.velocity.x > 0.0 {
-                            self.velocity.x = -self.velocity.x;
-                        }
-                    } else {
-                        new_x += overlap_x;
-                        if self.velocity.x < 0.0 {
-                            self.velocity.x = -self.velocity.x;
-                        }
-                    }
-                } else if new_y < py {
-                    new_y -= overlap_y;
-                    if self.velocity.y > 0.0 {
-                        self.velocity.y = -self.velocity.y;
-                    }
-                } else {
-                    new_y += overlap_y;
-                    if self.velocity.y < 0.0 {
-                        self.velocity.y = -self.velocity.y;
-                    }
-                }
-                break;
             }
-
-            x = new_x;
-            y = new_y;
+            break;
         }
 
         if let Some(obj) = ctx.scene.get_mut(ctx.self_id) {
-            obj.transform.position.x = x;
-            obj.transform.position.y = y;
+            obj.transform.position.x = new_x;
+            obj.transform.position.y = new_y;
         }
     }
 }
-

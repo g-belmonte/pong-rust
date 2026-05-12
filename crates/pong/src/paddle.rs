@@ -2,13 +2,18 @@ use std::any::Any;
 
 use num::clamp;
 
-use engine::scene::{Behaviour, Event, KeyCode, ObjectId, UpdateCtx};
+use engine::input::KeyCode;
+use engine::scene::{Behaviour, ObjectId, UpdateCtx};
 
 use crate::wall::WallBehaviour;
 
 /// Paddle behaviour: reads its own `Object::transform`, integrates vertical
 /// velocity, clamps against the top/bottom walls. Keys are configurable so
 /// the same behaviour drives both players.
+///
+/// Input is polled in `fixed_update`: holding the up/down key drives a
+/// constant velocity, releasing both stops the paddle. The physics step
+/// integrates with `ctx.time.delta_time()` (the constant fixed step).
 pub struct PaddleBehaviour {
     pub velocity: f32,
     pub width: f32,
@@ -55,22 +60,19 @@ impl Behaviour for PaddleBehaviour {
         self
     }
 
-    fn on_event(&mut self, _ctx: &mut UpdateCtx, event: &Event) {
-        match event {
-            Event::KeyPressed(k) if *k == self.up_key => self.velocity = -self.speed,
-            Event::KeyPressed(k) if *k == self.down_key => self.velocity = self.speed,
-            // Either-key release stops the paddle (matches the original input
-            // model: holding W or S sets a velocity, releasing either zeroes it).
-            Event::KeyReleased(k) if *k == self.up_key || *k == self.down_key => {
-                self.velocity = 0.0
-            }
-            _ => {}
-        }
-    }
+    fn fixed_update(&mut self, ctx: &mut UpdateCtx) {
+        // Polling input: each fixed tick resolves the current key state.
+        // Positive Y is downwards, so up-key produces a negative velocity.
+        let up = ctx.input.is_pressed(self.up_key);
+        let down = ctx.input.is_pressed(self.down_key);
+        self.velocity = match (up, down) {
+            (true, false) => -self.speed,
+            (false, true) => self.speed,
+            _ => 0.0,
+        };
 
-    fn update(&mut self, ctx: &mut UpdateCtx) {
         // Wall positions can shift only via deliberate scene edits (they
-        // don't move during play), but reading them every frame keeps this
+        // don't move during play), but reading them every tick keeps this
         // honest if a future game animates them.
         let top_y = ctx.scene.get(self.top_wall).map(|o| o.transform.position.y).unwrap_or(0.0);
         let top_h = ctx
@@ -88,13 +90,13 @@ impl Behaviour for PaddleBehaviour {
             .behaviour::<WallBehaviour>(self.bottom_wall)
             .map(|w| w.height)
             .unwrap_or(0.0);
-        // Positive Y is downwards, so the top boundary is the smaller y.
         let upper = top_y + top_h / 2.0;
         let lower = bottom_y - bottom_h / 2.0;
         let half_h = self.height / 2.0;
+        let dt = ctx.time.delta_time();
 
         if let Some(obj) = ctx.scene.get_mut(ctx.self_id) {
-            let new_y = obj.transform.position.y + ctx.time * self.velocity;
+            let new_y = obj.transform.position.y + dt * self.velocity;
             obj.transform.position.y = clamp(new_y, upper + half_h, lower - half_h);
         }
     }

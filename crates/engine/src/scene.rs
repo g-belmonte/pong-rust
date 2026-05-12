@@ -6,13 +6,28 @@
 //!
 //! ## Dispatch model
 //!
-//! On every frame, the engine walks all objects and calls
-//! [`Behaviour::update`] on each behaviour, then again for any incoming
-//! [`Event`]s via [`Behaviour::on_event`]. The behaviour being called is
-//! temporarily moved out of its parent `Object` for the duration of the call,
-//! so a behaviour does not see *itself* in `ctx.scene` during its own
-//! `update` — but it can read and mutate everything else, including its own
-//! `Object`'s `transform` and `visible` flag via `ctx.scene.get_mut(ctx.self_id)`.
+//! On every frame, the engine drains the fixed-timestep accumulator by
+//! calling [`Behaviour::fixed_update`] zero or more times (one per fixed
+//! step at [`crate::time::FIXED_HZ`]), then calls [`Behaviour::update`] once
+//! with the variable per-frame delta. Both hooks receive the same
+//! [`UpdateCtx`]; the only observable difference is `ctx.time.delta_time()`
+//! — fixed step inside `fixed_update`, variable inside `update`.
+//!
+//! Physics goes in `fixed_update`; rendering-bound logic (animations,
+//! interpolation, input edge detection for one-shot transitions) goes in
+//! `update`. The behaviour being called is temporarily moved out of its
+//! parent `Object` for the duration of the call, so a behaviour does not see
+//! *itself* in `ctx.scene` during its own hook — but it can read and mutate
+//! everything else, including its own `Object`'s `transform` and `visible`
+//! flag via `ctx.scene.get_mut(ctx.self_id)`.
+//!
+//! ## Input
+//!
+//! There is no event surface. All input is polling via `ctx.input`; see
+//! [`crate::input::Input`]. Continuous state lives in `is_pressed`; edge
+//! transitions live in `was_just_pressed` / `was_just_released` and stay
+//! observable through every fixed step plus the variable update of the
+//! current frame.
 //!
 //! ## Spawn / despawn
 //!
@@ -21,7 +36,7 @@
 //! callers can wire IDs together at build time). [`Scene::apply_commands`]
 //! drains the queue against the renderer at a frame boundary (registering
 //! instances on spawn, unregistering on despawn). The [`App`](crate::app::App)
-//! main loop calls it after every event/update batch.
+//! main loop calls it after every fixed_update and every update batch.
 //!
 //! ## Multi-instance objects
 //!
@@ -40,11 +55,12 @@ use std::any::Any;
 use std::collections::HashMap;
 
 use cgmath::{Matrix4, One, Quaternion, Vector3, Zero};
-use winit::event::VirtualKeyCode;
 
 use crate::graphics_manager::structures::hidden_transform;
 use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle, TextureHandle};
+use crate::input::Input;
 use crate::resources::Resources;
+use crate::time::Time;
 
 /// Opaque identifier for an object in the [`Scene`].
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -95,17 +111,6 @@ pub enum Renderable {
     },
 }
 
-/// Engine-side input event delivered to behaviours via [`Behaviour::on_event`].
-/// Phase 3 will replace this with a proper polling `Input` plus a richer event
-/// surface; for Phase 2 it just relays keyboard state changes.
-#[derive(Clone, Copy)]
-pub enum Event {
-    KeyPressed(VirtualKeyCode),
-    KeyReleased(VirtualKeyCode),
-}
-
-pub use winit::event::VirtualKeyCode as KeyCode;
-
 /// Per-call context passed to behaviour hooks.
 ///
 /// While a behaviour's hook is running, its own `behaviours` vec is empty
@@ -113,8 +118,13 @@ pub use winit::event::VirtualKeyCode as KeyCode;
 /// every other object, plus the current object's transform/visible/renderable.
 pub struct UpdateCtx<'a> {
     pub self_id: ObjectId,
-    /// Frame delta for `update`. Zero for `on_event` calls.
-    pub time: f32,
+    /// Per-call timing. `time.delta_time()` returns the fixed step inside
+    /// `fixed_update` and the variable per-frame delta inside `update`.
+    pub time: &'a Time,
+    /// Polling input state. Edge-triggered queries (`was_just_pressed` /
+    /// `was_just_released`) are stable through every fixed_update and the
+    /// variable update of a given frame.
+    pub input: &'a Input,
     pub scene: &'a mut Scene,
     pub resources: &'a mut Resources,
     pub graphics: &'a mut GraphicsManager,
@@ -133,11 +143,17 @@ impl<'a> UpdateCtx<'a> {
 /// do nothing. `as_any_mut` / `as_any` enable typed cross-behaviour lookup
 /// via [`Scene::behaviour_mut`] (e.g. a controller mutating a ball's velocity).
 pub trait Behaviour: Any {
+    /// Variable-timestep hook. Runs once per frame, after the fixed-step
+    /// drain. Use for rendering-bound work and one-shot input edges
+    /// (`input.was_just_pressed(...)`).
     fn update(&mut self, ctx: &mut UpdateCtx) {
         let _ = ctx;
     }
-    fn on_event(&mut self, ctx: &mut UpdateCtx, event: &Event) {
-        let _ = (ctx, event);
+    /// Fixed-timestep hook. Runs zero or more times per frame, each call
+    /// advancing simulation by `ctx.time.fixed_delta()`. Put physics and
+    /// any state that must be deterministic regardless of frame rate here.
+    fn fixed_update(&mut self, ctx: &mut UpdateCtx) {
+        let _ = ctx;
     }
     /// Contribute extra `(handle, transform)` pairs each frame. Used by
     /// multi-instance entities. `parent_matrix` is the owning object's
@@ -358,43 +374,42 @@ impl Scene {
     /// their stored Vec order.
     pub(crate) fn dispatch_update(
         &mut self,
-        dt: f32,
+        time: &Time,
+        input: &Input,
         resources: &mut Resources,
         gm: &mut GraphicsManager,
         exit_requested: &mut bool,
     ) {
-        // Snapshot IDs so that mid-update spawns (which only land at
-        // apply_commands anyway) don't affect this frame's dispatch set.
-        let ids: Vec<ObjectId> = self.objects.keys().copied().collect();
-        for id in ids {
-            let mut taken = match self.objects.get_mut(&id) {
-                Some(o) => std::mem::take(&mut o.behaviours),
-                None => continue,
-            };
-            for b in taken.iter_mut() {
-                let mut ctx = UpdateCtx {
-                    self_id: id,
-                    time: dt,
-                    scene: self,
-                    resources,
-                    graphics: gm,
-                    exit_requested,
-                };
-                b.update(&mut ctx);
-            }
-            if let Some(o) = self.objects.get_mut(&id) {
-                o.behaviours = taken;
-            }
-        }
+        self.dispatch_hook(time, input, resources, gm, exit_requested, |b, ctx| {
+            b.update(ctx);
+        });
     }
 
-    pub(crate) fn dispatch_event(
+    /// Dispatch `fixed_update`. Called once per consumed accumulator step.
+    pub(crate) fn dispatch_fixed_update(
         &mut self,
-        event: &Event,
+        time: &Time,
+        input: &Input,
         resources: &mut Resources,
         gm: &mut GraphicsManager,
         exit_requested: &mut bool,
     ) {
+        self.dispatch_hook(time, input, resources, gm, exit_requested, |b, ctx| {
+            b.fixed_update(ctx);
+        });
+    }
+
+    fn dispatch_hook(
+        &mut self,
+        time: &Time,
+        input: &Input,
+        resources: &mut Resources,
+        gm: &mut GraphicsManager,
+        exit_requested: &mut bool,
+        mut call: impl FnMut(&mut Box<dyn Behaviour>, &mut UpdateCtx),
+    ) {
+        // Snapshot IDs so that mid-dispatch spawns (which only land at
+        // apply_commands anyway) don't affect this batch's dispatch set.
         let ids: Vec<ObjectId> = self.objects.keys().copied().collect();
         for id in ids {
             let mut taken = match self.objects.get_mut(&id) {
@@ -404,13 +419,14 @@ impl Scene {
             for b in taken.iter_mut() {
                 let mut ctx = UpdateCtx {
                     self_id: id,
-                    time: 0.0,
+                    time,
+                    input,
                     scene: self,
                     resources,
                     graphics: gm,
                     exit_requested,
                 };
-                b.on_event(&mut ctx, event);
+                call(b, &mut ctx);
             }
             if let Some(o) = self.objects.get_mut(&id) {
                 o.behaviours = taken;

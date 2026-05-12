@@ -1,7 +1,8 @@
 //! Engine-owned application loop.
 //!
-//! [`App::run`] owns the winit event loop, the `GraphicsManager`, and the
-//! `Resources` queue; the game crate hands it a scene-builder closure
+//! [`App::run`] owns the winit event loop, the `GraphicsManager`, the
+//! `Resources` queue, the [`Input`] state, and the [`Time`] accumulator. The
+//! game crate hands it a scene-builder closure
 //! (`FnOnce(&mut Resources, &mut GraphicsManager) -> Scene`) and gets to
 //! collapse `main` down to roughly:
 //!
@@ -10,24 +11,33 @@
 //! ```
 //!
 //! Per-frame flow on `RedrawRequested`:
-//!   1. `Scene::dispatch_update(dt)` runs every behaviour's `update` hook.
-//!   2. `Scene::apply_commands` flushes any spawn/despawn queued during update.
-//!   3. `Resources::flush_pending` drops queued GPU resources (RAII Mesh/Texture).
-//!   4. `Scene::collect_transforms` gathers `(handle, matrix)` for the renderer.
-//!   5. `GraphicsManager::draw_frame` submits.
+//!   1. `Time::begin_frame` snapshots the variable delta and folds it into
+//!      the fixed-step accumulator.
+//!   2. While the accumulator has a step available:
+//!        a. `Scene::dispatch_fixed_update(time, input, …)` runs every
+//!           behaviour's `fixed_update`.
+//!        b. `Scene::apply_commands` flushes any spawn/despawn queued there.
+//!   3. `Scene::dispatch_update(time, input, …)` runs every behaviour's
+//!      variable-step `update`.
+//!   4. `Scene::apply_commands` flushes the variable-update queue.
+//!   5. `Input::end_frame` clears `just_pressed` / `just_released` edges.
+//!   6. `Resources::flush_pending` drops queued GPU resources (RAII Mesh/Texture).
+//!   7. `Scene::collect_transforms` gathers `(handle, matrix)` for the renderer.
+//!   8. `GraphicsManager::draw_frame` submits.
 //!
-//! Winit keyboard events are translated to [`Event::KeyPressed`] /
-//! [`Event::KeyReleased`] and dispatched via `Scene::dispatch_event`.
-//! Phase 3 will replace that with a polling `Input` abstraction.
+//! Winit input events update [`Input`] in place — there is no event-dispatch
+//! surface for game code. `WindowEvent::Focused(false)` triggers
+//! `Input::lose_focus` to avoid stuck-key syndrome after Alt-Tab.
 
 use winit::event::{ElementState, Event as WEvent, KeyboardInput, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
-use crate::graphics_manager::fps_limiter::FPSLimiter;
 use crate::graphics_manager::GraphicsManager;
+use crate::input::Input;
 use crate::resources::Resources;
-use crate::scene::{Event, Scene};
+use crate::scene::Scene;
+use crate::time::Time;
 
 type SceneBuilder = Box<dyn FnOnce(&mut Resources, &mut GraphicsManager) -> Scene>;
 
@@ -70,7 +80,8 @@ impl App {
         // Flush build-time spawns so the first frame sees populated objects.
         scene.apply_commands(&mut graphics_manager);
 
-        let mut tick_counter = FPSLimiter::new();
+        let mut time = Time::new();
+        let mut input = Input::new();
         let mut exit_requested = false;
 
         event_loop.run(move |event, _, control_flow| {
@@ -85,36 +96,60 @@ impl App {
                         graphics_manager.device_wait_idle();
                         *control_flow = ControlFlow::Exit;
                     }
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        let KeyboardInput { virtual_keycode, state, .. } = input;
+                    WindowEvent::KeyboardInput { input: kb, .. } => {
+                        let KeyboardInput { virtual_keycode, state, .. } = kb;
                         if let Some(kc) = virtual_keycode {
-                            let engine_event = match state {
-                                ElementState::Pressed => Event::KeyPressed(kc),
-                                ElementState::Released => Event::KeyReleased(kc),
-                            };
-                            scene.dispatch_event(
-                                &engine_event,
-                                &mut resources,
-                                &mut graphics_manager,
-                                &mut exit_requested,
-                            );
-                            scene.apply_commands(&mut graphics_manager);
+                            match state {
+                                ElementState::Pressed => input.on_key_pressed(kc),
+                                ElementState::Released => input.on_key_released(kc),
+                            }
                         }
                     }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        input.on_mouse_moved(position.x as f32, position.y as f32);
+                    }
+                    WindowEvent::MouseInput { state, button, .. } => match state {
+                        ElementState::Pressed => input.on_mouse_pressed(button),
+                        ElementState::Released => input.on_mouse_released(button),
+                    },
+                    WindowEvent::Focused(false) => input.lose_focus(),
                     _ => {}
                 },
                 WEvent::MainEventsCleared => {
                     graphics_manager.window_request_redraw();
                 }
                 WEvent::RedrawRequested(_) => {
-                    let dt = tick_counter.delta_time();
+                    time.begin_frame();
+
+                    // Drain accumulator: deterministic physics ticks.
+                    time.set_phase_fixed();
+                    while time.consume_fixed_step() {
+                        scene.dispatch_fixed_update(
+                            &time,
+                            &input,
+                            &mut resources,
+                            &mut graphics_manager,
+                            &mut exit_requested,
+                        );
+                        scene.apply_commands(&mut graphics_manager);
+                    }
+
+                    // Variable-rate update: rendering-bound work + edge input.
+                    time.set_phase_variable();
                     scene.dispatch_update(
-                        dt,
+                        &time,
+                        &input,
                         &mut resources,
                         &mut graphics_manager,
                         &mut exit_requested,
                     );
                     scene.apply_commands(&mut graphics_manager);
+
+                    // Clear edge state *after* both dispatches so every
+                    // fixed_update and the update of one frame see the same
+                    // `was_just_pressed` / `was_just_released` set.
+                    input.end_frame();
+
                     // Resource RAII flush must happen between frames — see
                     // resources.rs for why we don't do it in Drop.
                     resources.flush_pending(&mut graphics_manager);
@@ -122,9 +157,8 @@ impl App {
                     graphics_manager.draw_frame(&transforms);
 
                     if IS_PAINT_FPS_COUNTER {
-                        print!("FPS: {}\r", tick_counter.fps());
+                        print!("FPS: {}\r", time.fps());
                     }
-                    tick_counter.tick_frame();
                 }
                 WEvent::LoopDestroyed => graphics_manager.device_wait_idle(),
                 _ => (),

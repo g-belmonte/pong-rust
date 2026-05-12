@@ -16,7 +16,8 @@ use cgmath::Vector3;
 use engine::graphics_manager::structures::rect_mesh;
 use engine::graphics_manager::GraphicsManager;
 use engine::resources::Resources;
-use engine::scene::{KeyCode, Object, Renderable, Scene, Transform};
+use engine::input::KeyCode;
+use engine::scene::{Object, Renderable, Scene, Transform};
 
 use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
