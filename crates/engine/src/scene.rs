@@ -56,6 +56,7 @@ use std::collections::HashMap;
 
 use cgmath::{Matrix4, One, Quaternion, Vector3, Zero};
 
+use crate::camera::Camera2D;
 use crate::graphics_manager::structures::hidden_transform;
 use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle, TextureHandle};
 use crate::input::Input;
@@ -243,6 +244,10 @@ enum SceneCommand {
 }
 
 pub struct Scene {
+    /// Active 2D camera. The renderer reads this each frame via
+    /// `GraphicsManager::set_camera`; behaviours may mutate it (e.g. follow,
+    /// shake) through `ctx.scene.camera`.
+    pub camera: Camera2D,
     objects: HashMap<ObjectId, Object>,
     next_id: u32,
     commands: Vec<SceneCommand>,
@@ -257,6 +262,7 @@ impl Default for Scene {
 impl Scene {
     pub fn new() -> Self {
         Self {
+            camera: Camera2D::default(),
             objects: HashMap::new(),
             next_id: 0,
             commands: Vec::new(),

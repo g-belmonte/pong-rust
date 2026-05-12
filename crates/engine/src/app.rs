@@ -22,8 +22,10 @@
 //!   4. `Scene::apply_commands` flushes the variable-update queue.
 //!   5. `Input::end_frame` clears `just_pressed` / `just_released` edges.
 //!   6. `Resources::flush_pending` drops queued GPU resources (RAII Mesh/Texture).
-//!   7. `Scene::collect_transforms` gathers `(handle, matrix)` for the renderer.
-//!   8. `GraphicsManager::draw_frame` submits.
+//!   7. `GraphicsManager::set_camera` pushes the scene's `Camera2D` to the
+//!      shared UBO (no-op when matrices unchanged from the previous frame).
+//!   8. `Scene::collect_transforms` gathers `(handle, matrix)` for the renderer.
+//!   9. `GraphicsManager::draw_frame` submits.
 //!
 //! Winit input events update [`Input`] in place — there is no event-dispatch
 //! surface for game code. `WindowEvent::Focused(false)` triggers
@@ -153,6 +155,7 @@ impl App {
                     // Resource RAII flush must happen between frames — see
                     // resources.rs for why we don't do it in Drop.
                     resources.flush_pending(&mut graphics_manager);
+                    graphics_manager.set_camera(&scene.camera);
                     let transforms = scene.collect_transforms();
                     graphics_manager.draw_frame(&transforms);
 

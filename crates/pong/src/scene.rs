@@ -11,8 +11,9 @@
 //! move with negative-y = up, digits sit above the play field at `y ≈ -3.7`.
 //! Matches Vulkan clip-space Y and is mirrored by `digit.rs` and `text.rs`.
 
-use cgmath::Vector3;
+use cgmath::{Vector2, Vector3};
 
+use engine::camera::Camera2D;
 use engine::graphics_manager::structures::rect_mesh;
 use engine::graphics_manager::GraphicsManager;
 use engine::resources::Resources;
@@ -40,6 +41,13 @@ const GOAL_LINE_X: f32 = 4.7;
 const PADDLE_SPEED: f32 = 2.0;
 const BALL_KICKOFF_SPEED_X: f32 = 4.0;
 
+// World-space half-height of the visible area. Chosen to preserve the
+// pre-Phase-4 perspective view: at the previous camera (z=10, fov=45°),
+// the visible height at z=0 was 2 * 10 * tan(22.5°) ≈ 8.284, so half_height
+// ≈ 4.142 keeps every existing position (walls at ±3.2, digits at y ≈ -3.7)
+// in the same on-screen spot.
+const CAMERA_HALF_HEIGHT: f32 = 4.142;
+
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const FONT_RASTER_PX: f32 = 48.0;
 // 48 px / 0.005 = 9600 px per world unit — sized so "Welcome" sits inside
@@ -57,6 +65,7 @@ mod color {
 /// Build the initial scene. Handed to `engine::app::App::with_scene`.
 pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
     let mut scene = Scene::new();
+    scene.camera = Camera2D::new(Vector2::new(0.0, 0.0), CAMERA_HALF_HEIGHT);
 
     // Shared resources. Their RAII wrappers move into PhaseController below
     // so they outlive every instance built against them.

@@ -6,12 +6,11 @@ pub mod structures;
 pub mod tools;
 pub mod window;
 
-use cgmath::Deg;
 use cgmath::Matrix4;
-use cgmath::Point3;
-use cgmath::Vector3;
 use constants::*;
 use structures::{QueueFamilyIndices, SurfaceStuff};
+
+use crate::camera::Camera2D;
 
 use ash::version::DeviceV1_0;
 use ash::version::InstanceV1_0;
@@ -160,12 +159,21 @@ pub struct GraphicsManager {
 
     // ----- Camera UBO + descriptor pool/sets (survive swapchain recreation) -----
     // Camera UBO `(view, proj)` is shared across all models — one buffer per
-    // swapchain image, one descriptor set per swapchain image. Contents are
-    // rewritten only when the camera changes (init, swapchain recreation).
+    // swapchain image, one descriptor set per swapchain image. `set_camera`
+    // compares against `last_camera_view` / `last_camera_proj` and only writes
+    // the UBOs when the matrices actually change (which is rare today — Pong's
+    // camera is static, so the cache hits every frame after the first).
     camera_uniform_buffers: Vec<vk::Buffer>,
     camera_uniform_buffers_memory: Vec<vk::DeviceMemory>,
     descriptor_pool: vk::DescriptorPool,
     camera_descriptor_sets: Vec<vk::DescriptorSet>,
+    // Cached matrices last pushed to the camera UBOs. `None` until the first
+    // `set_camera` call. A change forces `device_wait_idle` + a write to every
+    // per-swapchain-image UBO, so per-frame mutation pays a synchronisation
+    // cost — fine for today's static-camera games; worth revisiting if a game
+    // moves the camera every frame.
+    last_camera_view: Option<Matrix4<f32>>,
+    last_camera_proj: Option<Matrix4<f32>>,
 
     // ----- Registered geometry, instances, and textures (survive recreation) -----
     meshes: HashMap<MeshHandle, MeshBuffers>,
@@ -198,10 +206,6 @@ pub struct GraphicsManager {
     textured_quad_index_buffer: vk::Buffer,
     textured_quad_index_memory: vk::DeviceMemory,
     textured_quad_index_count: u32,
-
-    // ----- Camera matrices (survive recreation; proj is rewritten on resize) -----
-    current_view: Matrix4<f32>,
-    current_proj: Matrix4<f32>,
 
     // ----- Command buffers + sync (survive recreation) -----
     command_pool: vk::CommandPool,
@@ -290,21 +294,11 @@ impl GraphicsManager {
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
 
-        // Camera lives in the renderer. View/proj are hardcoded; projection is recomputed
-        // on swapchain recreation. Models are registered by Scene after `new()` returns.
-        let current_view = Matrix4::look_at(
-            Point3::new(0.0, 0.0, 10.0),
-            Point3::new(0.0, 0.0, 0.0),
-            Vector3::new(0.0, 1.0, 0.0),
-        );
-        let current_proj = cgmath::perspective(
-            Deg(45.0),
-            swapchain_stuff.swapchain_extent.width as f32
-                / swapchain_stuff.swapchain_extent.height as f32,
-            0.1,
-            10.0,
-        );
-
+        // Camera lives on `Scene::camera`. The renderer holds the UBOs but
+        // doesn't own the matrices — game code mutates the camera and the
+        // App threads it in via `set_camera` before each `draw_frame`. UBOs
+        // start zero-initialised; the first `set_camera` writes them before
+        // the first draw.
         let swapchain_image_count = swapchain_stuff.swapchain_images.len();
         let (camera_uniform_buffers, camera_uniform_buffers_memory) = share::create_uniform_buffers(
             &device,
@@ -319,13 +313,6 @@ impl GraphicsManager {
             ubo_layout,
             &camera_uniform_buffers,
             swapchain_image_count,
-        );
-
-        write_camera_ubos(
-            &device,
-            &camera_uniform_buffers_memory,
-            current_view,
-            current_proj,
         );
 
         let (instance_buffers, instance_buffer_memories) = create_instance_buffers(
@@ -428,8 +415,8 @@ impl GraphicsManager {
             textured_quad_index_count: unit_quad_indices.len() as u32,
             textures: HashMap::new(),
             next_texture_handle: 0,
-            current_view,
-            current_proj,
+            last_camera_view: None,
+            last_camera_proj: None,
 
             command_pool,
             command_buffers,
@@ -634,6 +621,41 @@ impl GraphicsManager {
     #[allow(dead_code)]
     pub fn unregister_textured_instance(&mut self, handle: ModelHandle) {
         self.textured_instances.remove(&handle);
+    }
+
+    /// Push the active camera's matrices to the shared UBOs.
+    ///
+    /// Must be called before each `draw_frame` (the App does this). View comes
+    /// straight from the camera; projection is derived against the current
+    /// swapchain aspect ratio, so resizing the window automatically updates
+    /// the proj on the next call without the caller doing anything.
+    ///
+    /// Matrices are cached and writes are skipped when nothing changed —
+    /// today's static-camera games pay only an equality check per frame. A
+    /// change forces `device_wait_idle` + a write to every per-swapchain-image
+    /// UBO, which is the simple-but-stalling path. If a future game moves the
+    /// camera every frame, this should grow into per-frame-in-flight UBOs.
+    pub fn set_camera(&mut self, camera: &Camera2D) {
+        let aspect =
+            self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+        let view = camera.view();
+        let proj = camera.proj(aspect);
+        if self.last_camera_view == Some(view) && self.last_camera_proj == Some(proj) {
+            return;
+        }
+        unsafe {
+            self.device
+                .device_wait_idle()
+                .expect("device_wait_idle failed in set_camera");
+        }
+        write_camera_ubos(
+            &self.device,
+            &self.camera_uniform_buffers_memory,
+            view,
+            proj,
+        );
+        self.last_camera_view = Some(view);
+        self.last_camera_proj = Some(proj);
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
@@ -953,19 +975,12 @@ impl GraphicsManager {
                 share::create_render_finished_semaphores(&self.device, new_image_count);
         }
 
-        // Aspect ratio changed — push the new projection through the shared UBO.
-        self.current_proj = cgmath::perspective(
-            Deg(45.0),
-            self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32,
-            0.1,
-            10.0,
-        );
-        write_camera_ubos(
-            &self.device,
-            &self.camera_uniform_buffers_memory,
-            self.current_view,
-            self.current_proj,
-        );
+        // Aspect ratio changed — invalidate the cached camera matrices so the
+        // next `set_camera` rewrites the UBOs with the new projection. The
+        // App calls `set_camera` once per frame, before `draw_frame`, so a
+        // single OOD frame is the worst case before the new proj lands.
+        self.last_camera_view = None;
+        self.last_camera_proj = None;
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
