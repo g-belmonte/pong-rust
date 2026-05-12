@@ -54,6 +54,14 @@ const FONT_RASTER_PX: f32 = 48.0;
 // the play field. Kept in sync with FONT_RASTER_PX.
 const FONT_WORLD_SCALE: f32 = 0.005;
 
+// All four events currently share the same source file. When distinct samples
+// land, give each its own `include_bytes!` line and the rest of the wiring
+// stays the same.
+const WALL_BOUNCE_AUDIO: &[u8] = include_bytes!("../assets/hit.mp3");
+const PADDLE_BOUNCE_AUDIO: &[u8] = include_bytes!("../assets/hit.mp3");
+const SCORE_AUDIO: &[u8] = include_bytes!("../assets/score.mp3");
+const GAME_OVER_AUDIO: &[u8] = include_bytes!("../assets/victory.mp3");
+
 pub const WINNING_SCORE: u8 = 9;
 
 mod color {
@@ -73,6 +81,13 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     let wall_mesh = resources.load_mesh(gm, &rect_mesh(WALL_WIDTH, WALL_HEIGHT));
     let digit_meshes = DigitMeshes::load(resources, gm, DIGIT_SEGMENT_SIZE);
     let font_atlas = FontAtlas::build(resources, gm, FONT_BYTES, FONT_RASTER_PX);
+
+    // Sound assets: cheap to clone (kira's StaticSoundData is Arc-backed).
+    // Ball owns the bounce clones; PhaseController owns the score/end clones.
+    let wall_bounce_sfx = resources.load_sound(WALL_BOUNCE_AUDIO);
+    let paddle_bounce_sfx = resources.load_sound(PADDLE_BOUNCE_AUDIO);
+    let score_sfx = resources.load_sound(SCORE_AUDIO);
+    let game_over_sfx = resources.load_sound(GAME_OVER_AUDIO);
 
     // Walls first so paddles/ball can capture their IDs.
     let top_wall = scene.spawn(
@@ -138,6 +153,8 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
         bottom_wall,
         left_paddle,
         right_paddle,
+        wall_bounce_sfx,
+        paddle_bounce_sfx,
     );
     let ball = scene.spawn(
         Object::new()
@@ -200,6 +217,8 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
             wall_mesh,
             digit_meshes,
             font_atlas,
+            score_sfx,
+            game_over_sfx,
         )),
     );
 

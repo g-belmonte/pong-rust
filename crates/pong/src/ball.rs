@@ -3,6 +3,7 @@ use std::any::Any;
 use cgmath::Vector2;
 use rand::Rng;
 
+use engine::audio::Sound;
 use engine::graphics_manager::GraphicsManager;
 use engine::resources::{Resources, Texture};
 use engine::scene::{Behaviour, ObjectId, Renderable, UpdateCtx};
@@ -23,9 +24,12 @@ pub struct BallBehaviour {
     left_paddle: ObjectId,
     right_paddle: ObjectId,
     kickoff_speed_x: f32,
+    wall_bounce_sfx: Sound,
+    paddle_bounce_sfx: Sound,
 }
 
 impl BallBehaviour {
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         resources: &mut Resources,
         gm: &mut GraphicsManager,
@@ -35,6 +39,8 @@ impl BallBehaviour {
         bottom_wall: ObjectId,
         left_paddle: ObjectId,
         right_paddle: ObjectId,
+        wall_bounce_sfx: Sound,
+        paddle_bounce_sfx: Sound,
     ) -> (Self, Renderable) {
         let texture = resources.load_texture_png(gm, BALL_TEXTURE_PNG);
         let renderable = Renderable::Textured {
@@ -52,6 +58,8 @@ impl BallBehaviour {
                 left_paddle,
                 right_paddle,
                 kickoff_speed_x,
+                wall_bounce_sfx,
+                paddle_bounce_sfx,
             },
             renderable,
         )
@@ -139,25 +147,33 @@ impl Behaviour for BallBehaviour {
         let mut new_y = y + dt * self.velocity.y;
 
         // Walls (positive Y is downwards, so upper has smaller y).
+        let mut wall_hit = false;
         if new_y - br < upper {
             new_y = upper + br;
             if self.velocity.y < 0.0 {
                 self.velocity.y = -self.velocity.y;
+                wall_hit = true;
             }
         } else if new_y + br > lower {
             new_y = lower - br;
             if self.velocity.y > 0.0 {
                 self.velocity.y = -self.velocity.y;
+                wall_hit = true;
             }
+        }
+        if wall_hit {
+            ctx.audio.play(&self.wall_bounce_sfx);
         }
 
         // Paddles. Reflect on the axis with the smaller penetration depth.
+        let mut paddle_hit = false;
         for &(px, py, hpw, hph) in &paddles {
             let overlap_x = (new_x + br).min(px + hpw) - (new_x - br).max(px - hpw);
             let overlap_y = (new_y + br).min(py + hph) - (new_y - br).max(py - hph);
             if overlap_x <= 0.0 || overlap_y <= 0.0 {
                 continue;
             }
+            paddle_hit = true;
             if overlap_x < overlap_y {
                 if new_x < px {
                     new_x -= overlap_x;
@@ -182,6 +198,9 @@ impl Behaviour for BallBehaviour {
                 }
             }
             break;
+        }
+        if paddle_hit {
+            ctx.audio.play(&self.paddle_bounce_sfx);
         }
 
         if let Some(obj) = ctx.scene.get_mut(ctx.self_id) {

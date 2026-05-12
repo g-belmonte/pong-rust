@@ -9,6 +9,7 @@ use std::any::Any;
 
 use cgmath::Vector3;
 
+use engine::audio::Sound;
 use engine::input::KeyCode;
 use engine::resources::Mesh;
 use engine::scene::{Behaviour, ObjectId, UpdateCtx};
@@ -48,6 +49,11 @@ pub struct PhaseController {
     _wall_mesh: Mesh,
     _digit_meshes: DigitMeshes,
     _font_atlas: FontAtlas,
+
+    // Sound clones held by value (StaticSoundData is Arc-backed; cloning is
+    // cheap). Played on score / match-end transitions inside `update`.
+    score_sfx: Sound,
+    game_over_sfx: Sound,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -66,6 +72,8 @@ impl PhaseController {
         wall_mesh: Mesh,
         digit_meshes: DigitMeshes,
         font_atlas: FontAtlas,
+        score_sfx: Sound,
+        game_over_sfx: Sound,
     ) -> Self {
         Self {
             phase: GamePhase::Start,
@@ -84,6 +92,8 @@ impl PhaseController {
             _wall_mesh: wall_mesh,
             _digit_meshes: digit_meshes,
             _font_atlas: font_atlas,
+            score_sfx,
+            game_over_sfx,
         }
     }
 
@@ -185,6 +195,7 @@ impl Behaviour for PhaseController {
                 d.set_value(self.right_score);
             }
         }
+        ctx.audio.play(&self.score_sfx);
         // Stop the ball + paddles regardless of outcome.
         if let Some(ball) = ctx.scene.behaviour_mut::<BallBehaviour>(self.ball) {
             ball.stop();
@@ -198,6 +209,7 @@ impl Behaviour for PhaseController {
         if self.match_over() {
             self.phase = GamePhase::End;
             Self::set_label_visible(ctx, self.game_over_label, true);
+            ctx.audio.play(&self.game_over_sfx);
         } else {
             self.phase = GamePhase::Start;
             Self::reset_positions(

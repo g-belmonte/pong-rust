@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio;
 pub mod camera;
 pub mod graphics_manager;
 pub mod input;

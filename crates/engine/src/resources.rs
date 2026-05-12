@@ -14,6 +14,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::audio::Sound;
 use crate::graphics_manager::structures::ModelMesh;
 use crate::graphics_manager::{GraphicsManager, MeshHandle, TextureHandle};
 
@@ -76,6 +77,18 @@ impl Resources {
             handle,
             pending: Rc::clone(&self.pending),
         }
+    }
+
+    /// Decode `bytes` (any container `kira` supports — mp3 in the default
+    /// engine build) into a [`Sound`]. The returned `Sound` is cheap to clone;
+    /// hand a clone to every consumer that needs to play it.
+    ///
+    /// Unlike `load_mesh` / `load_texture_*`, this does not touch the
+    /// pending-destroys queue: a `Sound` owns plain heap memory through an
+    /// internal `Arc`, freed when the last clone drops. No `GraphicsManager`
+    /// is required since audio is independent of the renderer.
+    pub fn load_sound(&self, bytes: &[u8]) -> Sound {
+        Sound::from_bytes(bytes).expect("Resources::load_sound: failed to decode audio bytes")
     }
 
     /// Drain any queued resource destroys. Must be called at a point where the

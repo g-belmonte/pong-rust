@@ -56,6 +56,7 @@ use std::collections::HashMap;
 
 use cgmath::{Matrix4, One, Quaternion, Vector3, Zero};
 
+use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::graphics_manager::structures::hidden_transform;
 use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle, TextureHandle};
@@ -129,6 +130,8 @@ pub struct UpdateCtx<'a> {
     pub scene: &'a mut Scene,
     pub resources: &'a mut Resources,
     pub graphics: &'a mut GraphicsManager,
+    /// Engine-side audio output. Call `ctx.audio.play(&sound)` to fire a SFX.
+    pub audio: &'a mut AudioManager,
     /// Behaviours set this to request graceful exit. The engine honours it
     /// at the next iteration of the event loop.
     pub exit_requested: &'a mut bool,
@@ -378,39 +381,45 @@ impl Scene {
     /// Dispatch `update` to every behaviour. Order across objects is not
     /// guaranteed (HashMap iteration); within an object, behaviours run in
     /// their stored Vec order.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_update(
         &mut self,
         time: &Time,
         input: &Input,
         resources: &mut Resources,
         gm: &mut GraphicsManager,
+        audio: &mut AudioManager,
         exit_requested: &mut bool,
     ) {
-        self.dispatch_hook(time, input, resources, gm, exit_requested, |b, ctx| {
+        self.dispatch_hook(time, input, resources, gm, audio, exit_requested, |b, ctx| {
             b.update(ctx);
         });
     }
 
     /// Dispatch `fixed_update`. Called once per consumed accumulator step.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_fixed_update(
         &mut self,
         time: &Time,
         input: &Input,
         resources: &mut Resources,
         gm: &mut GraphicsManager,
+        audio: &mut AudioManager,
         exit_requested: &mut bool,
     ) {
-        self.dispatch_hook(time, input, resources, gm, exit_requested, |b, ctx| {
+        self.dispatch_hook(time, input, resources, gm, audio, exit_requested, |b, ctx| {
             b.fixed_update(ctx);
         });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn dispatch_hook(
         &mut self,
         time: &Time,
         input: &Input,
         resources: &mut Resources,
         gm: &mut GraphicsManager,
+        audio: &mut AudioManager,
         exit_requested: &mut bool,
         mut call: impl FnMut(&mut Box<dyn Behaviour>, &mut UpdateCtx),
     ) {
@@ -430,6 +439,7 @@ impl Scene {
                     scene: self,
                     resources,
                     graphics: gm,
+                    audio,
                     exit_requested,
                 };
                 call(b, &mut ctx);

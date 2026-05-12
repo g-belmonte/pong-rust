@@ -34,6 +34,7 @@
 use winit::event::{ElementState, Event as WEvent, KeyboardInput, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 
+use crate::audio::AudioManager;
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
 use crate::graphics_manager::GraphicsManager;
 use crate::input::Input;
@@ -84,6 +85,7 @@ impl App {
 
         let mut time = Time::new();
         let mut input = Input::new();
+        let mut audio = AudioManager::new();
         let mut exit_requested = false;
 
         event_loop.run(move |event, _, control_flow| {
@@ -131,6 +133,7 @@ impl App {
                             &input,
                             &mut resources,
                             &mut graphics_manager,
+                            &mut audio,
                             &mut exit_requested,
                         );
                         scene.apply_commands(&mut graphics_manager);
@@ -143,6 +146,7 @@ impl App {
                         &input,
                         &mut resources,
                         &mut graphics_manager,
+                        &mut audio,
                         &mut exit_requested,
                     );
                     scene.apply_commands(&mut graphics_manager);
