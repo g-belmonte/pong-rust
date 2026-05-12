@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use cgmath::{Matrix4, Vector3};
 use fontdue::{Font, FontSettings};
 
-use crate::graphics_manager::structures::hidden_transform;
-use crate::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
+use engine::graphics_manager::structures::hidden_transform;
+use engine::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
 
 const PRINTABLE_ASCII_START: u32 = 32;
 const PRINTABLE_ASCII_END: u32 = 126;

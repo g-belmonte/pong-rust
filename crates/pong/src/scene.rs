@@ -18,7 +18,7 @@ use rand::Rng;
 
 use crate::ball::Ball;
 use crate::digit::{Digit, DigitMeshes};
-use crate::graphics_manager::{GraphicsManager, ModelHandle};
+use engine::graphics_manager::{GraphicsManager, ModelHandle};
 use crate::paddle::Paddle;
 use crate::text::{FontAtlas, TextLabel};
 use crate::wall::Wall;

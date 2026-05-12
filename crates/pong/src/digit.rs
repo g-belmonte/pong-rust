@@ -1,7 +1,7 @@
 use cgmath::{Matrix4, Vector3};
 
-use crate::graphics_manager::structures::{hidden_transform, rect_mesh};
-use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
+use engine::graphics_manager::structures::{hidden_transform, rect_mesh};
+use engine::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
 
 // Segment order: [top, top-left, top-right, middle, bottom-left, bottom-right, bottom].
 #[rustfmt::skip]

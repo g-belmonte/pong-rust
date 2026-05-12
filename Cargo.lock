@@ -322,6 +322,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ea835d29036a4087793836fa931b08837ad5e957da9e23886b29586fb9b6650"
 
 [[package]]
+name = "engine"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "bitflags",
+ "cgmath",
+ "cocoa 0.18.5",
+ "dirs",
+ "image",
+ "memoffset",
+ "metal",
+ "num",
+ "objc",
+ "winapi 0.3.9",
+ "winit",
+]
+
+[[package]]
 name = "fontdue"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -788,22 +806,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "pong-rust"
+name = "pong"
 version = "0.1.0"
 dependencies = [
- "ash",
- "bitflags",
  "cgmath",
- "cocoa 0.18.5",
- "dirs",
+ "engine",
  "fontdue",
- "image",
- "memoffset",
- "metal",
  "num",
- "objc",
  "rand 0.8.5",
- "winapi 0.3.9",
  "winit",
 ]
 

@@ -1,7 +1,7 @@
 use cgmath::Vector3;
 
-use crate::graphics_manager::structures::rect_mesh;
-use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
+use engine::graphics_manager::structures::rect_mesh;
+use engine::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
 
 const COLOR: [f32; 3] = [0.0, 1.0, 0.0];
 

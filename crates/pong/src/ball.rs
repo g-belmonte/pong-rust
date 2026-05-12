@@ -1,6 +1,6 @@
 use cgmath::{Matrix4, Vector2, Vector3};
 
-use crate::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
+use engine::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
 
 const BALL_TEXTURE_PNG: &[u8] = include_bytes!("../assets/tennis-ball.png");
 

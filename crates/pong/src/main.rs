@@ -1,13 +1,13 @@
 mod ball;
 mod digit;
-mod graphics_manager;
 mod paddle;
 mod scene;
 mod text;
 mod wall;
 
-use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
-use crate::graphics_manager::GraphicsManager;
+use engine::graphics_manager;
+use engine::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
+use engine::graphics_manager::GraphicsManager;
 
 use scene::Scene;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
