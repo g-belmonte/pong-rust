@@ -456,7 +456,7 @@ impl GraphicsManager {
         };
     }
 
-    pub fn register_mesh(&mut self, mesh: &ModelMesh) -> MeshHandle {
+    pub(crate) fn register_mesh(&mut self, mesh: &ModelMesh) -> MeshHandle {
         let handle = MeshHandle(self.next_mesh_handle);
         self.next_mesh_handle += 1;
         let (vertex_buffer, vertex_memory) = share::create_vertex_buffer(
@@ -504,8 +504,7 @@ impl GraphicsManager {
         handle
     }
 
-    #[allow(dead_code)]
-    pub fn unregister_mesh(&mut self, mesh: MeshHandle) {
+    pub(crate) fn unregister_mesh(&mut self, mesh: MeshHandle) {
         if let Some(buffers) = self.meshes.remove(&mesh) {
             unsafe {
                 self.device
@@ -521,7 +520,7 @@ impl GraphicsManager {
         self.instances.remove(&handle);
     }
 
-    pub fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
+    pub(crate) fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
         let handle = TextureHandle(self.next_texture_handle);
         self.next_texture_handle += 1;
 
@@ -556,7 +555,7 @@ impl GraphicsManager {
         handle
     }
 
-    pub fn register_texture_rgba(
+    pub(crate) fn register_texture_rgba(
         &mut self,
         width: u32,
         height: u32,
@@ -598,8 +597,7 @@ impl GraphicsManager {
         handle
     }
 
-    #[allow(dead_code)]
-    pub fn unregister_texture(&mut self, handle: TextureHandle) {
+    pub(crate) fn unregister_texture(&mut self, handle: TextureHandle) {
         if let Some(tex) = self.textures.remove(&handle) {
             unsafe {
                 self.device

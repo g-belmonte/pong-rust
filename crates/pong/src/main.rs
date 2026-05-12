@@ -8,6 +8,7 @@ mod wall;
 use engine::graphics_manager;
 use engine::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
 use engine::graphics_manager::GraphicsManager;
+use engine::resources::Resources;
 
 use scene::Scene;
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
@@ -33,6 +34,7 @@ enum InputAction {
 
 struct PongRust {
     graphics_manager: GraphicsManager,
+    resources: Resources,
     scene: Scene,
     game_phase: GamePhase,
 }
@@ -79,6 +81,10 @@ impl PongRust {
                     }
                 }
                 self.scene.update(delta_time);
+                // Drain any resources queued for destruction since the last
+                // frame. Frame boundary is a safe point — no command buffer
+                // referencing this frame's resources has been submitted yet.
+                self.resources.flush_pending(&mut self.graphics_manager);
                 let transforms = self.scene.get_model_transforms();
                 self.graphics_manager.draw_frame(&transforms);
 
@@ -134,9 +140,11 @@ impl PongRust {
 fn main() {
     let event_loop = EventLoop::new();
     let mut graphics_manager = GraphicsManager::new(&event_loop);
-    let scene = Scene::new(&mut graphics_manager);
+    let mut resources = Resources::new();
+    let scene = Scene::new(&mut resources, &mut graphics_manager);
     let pong_rust = PongRust {
         graphics_manager,
+        resources,
         scene,
         game_phase: GamePhase::Start,
     };

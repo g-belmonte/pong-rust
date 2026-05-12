@@ -4,7 +4,8 @@ use cgmath::{Matrix4, Vector3};
 use fontdue::{Font, FontSettings};
 
 use engine::graphics_manager::structures::hidden_transform;
-use engine::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
+use engine::graphics_manager::{GraphicsManager, ModelHandle};
+use engine::resources::{Resources, Texture};
 
 const PRINTABLE_ASCII_START: u32 = 32;
 const PRINTABLE_ASCII_END: u32 = 126;
@@ -24,14 +25,20 @@ pub struct GlyphInfo {
 }
 
 pub struct FontAtlas {
-    pub texture: TextureHandle,
+    // RAII: the atlas owns the texture; labels reference it by handle().
+    pub texture: Texture,
     pub glyphs: HashMap<char, GlyphInfo>,
     pub ascent: f32,
     pub descent: f32,
 }
 
 impl FontAtlas {
-    pub fn build(gm: &mut GraphicsManager, font_bytes: &[u8], px: f32) -> Self {
+    pub fn build(
+        resources: &mut Resources,
+        gm: &mut GraphicsManager,
+        font_bytes: &[u8],
+        px: f32,
+    ) -> Self {
         let font = Font::from_bytes(font_bytes, FontSettings::default())
             .expect("Failed to load font");
 
@@ -98,7 +105,7 @@ impl FontAtlas {
             }
         }
 
-        let texture = gm.register_texture_rgba(ATLAS_SIZE, ATLAS_SIZE, &atlas);
+        let texture = resources.load_texture_rgba(gm, ATLAS_SIZE, ATLAS_SIZE, &atlas);
 
         let mut glyphs = HashMap::new();
         let s = ATLAS_SIZE as f32;
@@ -184,7 +191,7 @@ impl TextLabel {
 
                 let uv_offset = g.uv_min;
                 let uv_scale = [g.uv_max[0] - g.uv_min[0], g.uv_max[1] - g.uv_min[1]];
-                let handle = gm.register_textured_instance(atlas.texture, uv_offset, uv_scale);
+                let handle = gm.register_textured_instance(atlas.texture.handle(), uv_offset, uv_scale);
 
                 // Centre of the glyph rect in label-local coords. The unit quad
                 // is [-0.5..0.5]^2, so per-frame model = Translate(label_pos +

@@ -18,7 +18,9 @@ use rand::Rng;
 
 use crate::ball::Ball;
 use crate::digit::{Digit, DigitMeshes};
+use engine::graphics_manager::structures::rect_mesh;
 use engine::graphics_manager::{GraphicsManager, ModelHandle};
+use engine::resources::{Mesh, Resources};
 use crate::paddle::Paddle;
 use crate::text::{FontAtlas, TextLabel};
 use crate::wall::Wall;
@@ -59,12 +61,16 @@ pub struct Scene {
     pub right_digit: Digit,
     pub left_score: u8,
     pub right_score: u8,
-    // Atlas owns the font texture; labels reference it via TextureHandle.
+    // Atlas owns the font texture; labels reference it via texture.handle().
     // FUTURE (CLAUDE.md option-B follow-up): move GamePhase into Scene and
     // toggle label visibility internally on phase transitions.
     pub _font_atlas: FontAtlas,
     pub welcome_label: TextLabel,
     pub game_over_label: TextLabel,
+    // Shared meshes (RAII): kept alive for as long as their instances exist.
+    _paddle_mesh: Mesh,
+    _wall_mesh: Mesh,
+    _digit_meshes: DigitMeshes,
 }
 
 mod color {
@@ -86,8 +92,8 @@ pub enum Action {
 }
 
 impl Scene {
-    pub fn new(gm: &mut GraphicsManager) -> Self {
-        let font_atlas = FontAtlas::build(gm, FONT_BYTES, FONT_RASTER_PX);
+    pub fn new(resources: &mut Resources, gm: &mut GraphicsManager) -> Self {
+        let font_atlas = FontAtlas::build(resources, gm, FONT_BYTES, FONT_RASTER_PX);
         // Labels sit inside the play field, vertically centred.
         let welcome_label = TextLabel::new(
             gm,
@@ -105,58 +111,61 @@ impl Scene {
         );
         game_over_label.set_visible(false);
 
-        // Register each shared solid-colour mesh exactly once. Both paddles
-        // share one mesh, both walls share one, and all digit segments share
-        // two (horizontal/vertical). Per-instance colour is supplied later.
-        let paddle_mesh = Paddle::register_mesh(gm, PADDLE_HEIGHT, PADDLE_WIDTH);
-        let wall_mesh = Wall::register_mesh(gm, WALL_HEIGHT, WALL_WIDTH);
-        let digit_meshes = DigitMeshes::register(gm, DIGIT_SEGMENT_SIZE);
+        // Load each shared solid-colour mesh exactly once. Both paddles share
+        // one mesh, both walls share one, and all digit segments share two
+        // (horizontal/vertical). Per-instance colour is supplied later. The
+        // Scene owns the RAII `Mesh` wrappers so they outlive the instances.
+        let paddle_mesh = resources.load_mesh(gm, &rect_mesh(PADDLE_WIDTH, PADDLE_HEIGHT));
+        let wall_mesh = resources.load_mesh(gm, &rect_mesh(WALL_WIDTH, WALL_HEIGHT));
+        let digit_meshes = DigitMeshes::load(resources, gm, DIGIT_SEGMENT_SIZE);
+
+        let left_paddle = Paddle::with_mesh(
+            gm,
+            paddle_mesh.handle(),
+            Vector3 { x: -4.0, y: 0.0, z: 0.0 },
+            PADDLE_HEIGHT,
+            PADDLE_WIDTH,
+            color::RED,
+        );
+        let right_paddle = Paddle::with_mesh(
+            gm,
+            paddle_mesh.handle(),
+            Vector3 { x: 4.0, y: 0.0, z: 0.0 },
+            PADDLE_HEIGHT,
+            PADDLE_WIDTH,
+            color::BLUE,
+        );
+        let top_wall = Wall::with_mesh(
+            gm,
+            wall_mesh.handle(),
+            Vector3 { x: 0.0, y: -WALL_OFFSET_Y, z: 0.0 },
+            WALL_HEIGHT,
+        );
+        let bottom_wall = Wall::with_mesh(
+            gm,
+            wall_mesh.handle(),
+            Vector3 { x: 0.0, y: WALL_OFFSET_Y, z: 0.0 },
+            WALL_HEIGHT,
+        );
+        let left_digit = Digit::new(gm, &digit_meshes, Vector3 { x: -1.0, y: -3.7, z: 0.0 });
+        let right_digit = Digit::new(gm, &digit_meshes, Vector3 { x: 1.0, y: -3.7, z: 0.0 });
 
         Self {
-            left_paddle: Paddle::with_mesh(
-                gm,
-                paddle_mesh,
-                Vector3 { x: -4.0, y: 0.0, z: 0.0 },
-                PADDLE_HEIGHT,
-                PADDLE_WIDTH,
-                color::RED,
-            ),
-            right_paddle: Paddle::with_mesh(
-                gm,
-                paddle_mesh,
-                Vector3 { x: 4.0, y: 0.0, z: 0.0 },
-                PADDLE_HEIGHT,
-                PADDLE_WIDTH,
-                color::BLUE,
-            ),
-            top_wall: Wall::with_mesh(
-                gm,
-                wall_mesh,
-                Vector3 { x: 0.0, y: -WALL_OFFSET_Y, z: 0.0 },
-                WALL_HEIGHT,
-            ),
-            bottom_wall: Wall::with_mesh(
-                gm,
-                wall_mesh,
-                Vector3 { x: 0.0, y: WALL_OFFSET_Y, z: 0.0 },
-                WALL_HEIGHT,
-            ),
-            ball: Ball::new(gm, Vector3::zero(), 0.2),
-            left_digit: Digit::new(
-                gm,
-                &digit_meshes,
-                Vector3 { x: -1.0, y: -3.7, z: 0.0 },
-            ),
-            right_digit: Digit::new(
-                gm,
-                &digit_meshes,
-                Vector3 { x: 1.0, y: -3.7, z: 0.0 },
-            ),
+            left_paddle,
+            right_paddle,
+            top_wall,
+            bottom_wall,
+            ball: Ball::new(resources, gm, Vector3::zero(), 0.2),
+            left_digit,
+            right_digit,
             left_score: 0,
             right_score: 0,
             _font_atlas: font_atlas,
             welcome_label,
             game_over_label,
+            _paddle_mesh: paddle_mesh,
+            _wall_mesh: wall_mesh,
+            _digit_meshes: digit_meshes,
         }
     }
 

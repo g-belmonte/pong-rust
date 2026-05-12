@@ -1,12 +1,14 @@
 use cgmath::{Matrix4, Vector2, Vector3};
 
-use engine::graphics_manager::{GraphicsManager, ModelHandle, TextureHandle};
+use engine::graphics_manager::{GraphicsManager, ModelHandle};
+use engine::resources::{Resources, Texture};
 
 const BALL_TEXTURE_PNG: &[u8] = include_bytes!("../assets/tennis-ball.png");
 
 pub struct Ball {
     pub model_handle: ModelHandle,
-    pub _texture: TextureHandle,
+    // RAII: dropped texture queues its GPU resources for cleanup.
+    pub _texture: Texture,
     pub position: Vector3<f32>,
     pub velocity: Vector2<f32>,
     pub side_length: f32,
@@ -14,13 +16,14 @@ pub struct Ball {
 
 impl Ball {
     pub fn new(
+        resources: &mut Resources,
         gm: &mut GraphicsManager,
         position: Vector3<f32>,
         side_length: f32,
     ) -> Self {
-        let texture = gm.register_texture(BALL_TEXTURE_PNG);
+        let texture = resources.load_texture_png(gm, BALL_TEXTURE_PNG);
         // Whole texture maps onto the unit quad: uv goes 0..1 across both axes.
-        let model_handle = gm.register_textured_instance(texture, [0.0, 0.0], [1.0, 1.0]);
+        let model_handle = gm.register_textured_instance(texture.handle(), [0.0, 0.0], [1.0, 1.0]);
         Self {
             model_handle,
             _texture: texture,

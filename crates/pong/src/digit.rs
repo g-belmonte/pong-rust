@@ -1,7 +1,8 @@
 use cgmath::{Matrix4, Vector3};
 
 use engine::graphics_manager::structures::{hidden_transform, rect_mesh};
-use engine::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
+use engine::graphics_manager::{GraphicsManager, ModelHandle};
+use engine::resources::{Mesh, Resources};
 
 // Segment order: [top, top-left, top-right, middle, bottom-left, bottom-right, bottom].
 #[rustfmt::skip]
@@ -21,21 +22,26 @@ const SEGMENTS_FOR_DIGIT: [[bool; 7]; 10] = [
 
 const COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 
-/// Two shared meshes — horizontal and vertical segments — registered once
+/// Two shared meshes — horizontal and vertical segments — loaded once
 /// and reused as instances by every digit. Saves 12 buffer allocations
 /// (relative to the old per-segment registration) for two on-screen digits.
+/// The RAII `Mesh` wrappers must outlive every digit instance built against them.
 pub struct DigitMeshes {
-    pub horizontal: MeshHandle,
-    pub vertical: MeshHandle,
+    pub horizontal: Mesh,
+    pub vertical: Mesh,
     pub segment_size: f32,
 }
 
 impl DigitMeshes {
-    pub fn register(gm: &mut GraphicsManager, segment_size: f32) -> Self {
+    pub fn load(
+        resources: &mut Resources,
+        gm: &mut GraphicsManager,
+        segment_size: f32,
+    ) -> Self {
         let thickness = segment_size * 0.2;
         Self {
-            horizontal: gm.register_mesh(&rect_mesh(segment_size, thickness)),
-            vertical: gm.register_mesh(&rect_mesh(thickness, segment_size)),
+            horizontal: resources.load_mesh(gm, &rect_mesh(segment_size, thickness)),
+            vertical: resources.load_mesh(gm, &rect_mesh(thickness, segment_size)),
             segment_size,
         }
     }
@@ -50,8 +56,8 @@ pub struct Digit {
 
 impl Digit {
     pub fn new(gm: &mut GraphicsManager, meshes: &DigitMeshes, position: Vector3<f32>) -> Self {
-        let h = meshes.horizontal;
-        let v = meshes.vertical;
+        let h = meshes.horizontal.handle();
+        let v = meshes.vertical.handle();
         let segments = [
             gm.register_instance(h, COLOR), // top
             gm.register_instance(v, COLOR), // top-left

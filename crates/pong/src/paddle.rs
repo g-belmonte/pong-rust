@@ -1,6 +1,5 @@
 use cgmath::Vector3;
 
-use engine::graphics_manager::structures::rect_mesh;
 use engine::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle};
 
 pub struct Paddle {
@@ -12,13 +11,7 @@ pub struct Paddle {
 }
 
 impl Paddle {
-    /// Register a shared paddle mesh. Both paddles use the same dimensions today
-    /// so callers should register once and reuse the handle for both instances.
-    pub fn register_mesh(gm: &mut GraphicsManager, height: f32, width: f32) -> MeshHandle {
-        gm.register_mesh(&rect_mesh(width, height))
-    }
-
-    /// Build a paddle that reuses a previously-registered mesh.
+    /// Build a paddle that reuses a previously-loaded mesh.
     pub fn with_mesh(
         gm: &mut GraphicsManager,
         mesh: MeshHandle,
