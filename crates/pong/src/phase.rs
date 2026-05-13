@@ -7,7 +7,7 @@
 
 use std::any::Any;
 
-use cgmath::Vector3;
+use engine::Vec3;
 
 use engine::audio::Sound;
 use engine::input::KeyCode;
@@ -105,7 +105,7 @@ impl PhaseController {
 
     fn reset_positions(ctx: &mut UpdateCtx, ball: ObjectId, paddles: [ObjectId; 2]) {
         if let Some(obj) = ctx.scene.get_mut(ball) {
-            obj.transform.position = Vector3 { x: 0.0, y: 0.0, z: 0.0 };
+            obj.transform.position = Vec3::ZERO;
         }
         if let Some(ball_b) = ctx.scene.behaviour_mut::<BallBehaviour>(ball) {
             ball_b.stop();

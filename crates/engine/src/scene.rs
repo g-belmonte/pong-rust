@@ -54,7 +54,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 
-use cgmath::{Matrix4, One, Quaternion, Vector3, Zero};
+use glam::{Mat4, Quat, Vec3};
 
 use crate::audio::AudioManager;
 use crate::camera::Camera2D;
@@ -73,30 +73,28 @@ pub struct ObjectId(u32);
 /// later; identity is the right default for 2D scenes.
 #[derive(Clone, Copy)]
 pub struct Transform {
-    pub position: Vector3<f32>,
-    pub rotation: Quaternion<f32>,
-    pub scale: Vector3<f32>,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub scale: Vec3,
 }
 
 impl Default for Transform {
     fn default() -> Self {
         Self {
-            position: Vector3::zero(),
-            rotation: Quaternion::one(),
-            scale: Vector3 { x: 1.0, y: 1.0, z: 1.0 },
+            position: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
         }
     }
 }
 
 impl Transform {
-    pub fn from_position(position: Vector3<f32>) -> Self {
+    pub fn from_position(position: Vec3) -> Self {
         Self { position, ..Self::default() }
     }
 
-    pub fn matrix(&self) -> Matrix4<f32> {
-        Matrix4::from_translation(self.position)
-            * Matrix4::from(self.rotation)
-            * Matrix4::from_nonuniform_scale(self.scale.x, self.scale.y, self.scale.z)
+    pub fn matrix(&self) -> Mat4 {
+        Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.position)
     }
 }
 
@@ -165,8 +163,8 @@ pub trait Behaviour: Any {
     /// per-sub-instance local offsets onto it.
     fn collect_renderables(
         &self,
-        parent_matrix: Matrix4<f32>,
-        out: &mut Vec<(ModelHandle, Matrix4<f32>)>,
+        parent_matrix: Mat4,
+        out: &mut Vec<(ModelHandle, Mat4)>,
     ) {
         let _ = (parent_matrix, out);
     }
@@ -216,7 +214,7 @@ impl Object {
         self
     }
 
-    pub fn with_position(mut self, p: Vector3<f32>) -> Self {
+    pub fn with_position(mut self, p: Vec3) -> Self {
         self.transform.position = p;
         self
     }
@@ -360,10 +358,10 @@ impl Scene {
         }
     }
 
-    /// Build the `(ModelHandle, Matrix4)` list the renderer expects each frame.
+    /// Build the `(ModelHandle, Mat4)` list the renderer expects each frame.
     /// Walks every object, emits the renderable's instance (parked if
     /// `!visible`), and lets each behaviour contribute extra entries.
-    pub fn collect_transforms(&self) -> Vec<(ModelHandle, Matrix4<f32>)> {
+    pub fn collect_transforms(&self) -> Vec<(ModelHandle, Mat4)> {
         let mut out = Vec::new();
         for obj in self.objects.values() {
             let m = obj.transform.matrix();

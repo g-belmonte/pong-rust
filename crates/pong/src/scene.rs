@@ -11,7 +11,7 @@
 //! move with negative-y = up, digits sit above the play field at `y ≈ -3.7`.
 //! Matches Vulkan clip-space Y and is mirrored by `digit.rs` and `text.rs`.
 
-use cgmath::{Vector2, Vector3};
+use engine::{Vec2, Vec3};
 
 use engine::camera::Camera2D;
 use engine::graphics_manager::structures::rect_mesh;
@@ -73,7 +73,7 @@ mod color {
 /// Build the initial scene. Handed to `engine::app::App::with_scene`.
 pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
     let mut scene = Scene::new();
-    scene.camera = Camera2D::new(Vector2::new(0.0, 0.0), CAMERA_HALF_HEIGHT);
+    scene.camera = Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT);
 
     // Shared resources. Their RAII wrappers move into PhaseController below
     // so they outlive every instance built against them.
@@ -92,7 +92,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     // Walls first so paddles/ball can capture their IDs.
     let top_wall = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 0.0, y: -WALL_OFFSET_Y, z: 0.0 })
+            .with_position(Vec3::new(0.0, -WALL_OFFSET_Y, 0.0))
             .with_renderable(Renderable::Solid {
                 mesh: wall_mesh.handle(),
                 color: color::GREEN,
@@ -101,7 +101,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     );
     let bottom_wall = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 0.0, y: WALL_OFFSET_Y, z: 0.0 })
+            .with_position(Vec3::new(0.0, WALL_OFFSET_Y, 0.0))
             .with_renderable(Renderable::Solid {
                 mesh: wall_mesh.handle(),
                 color: color::GREEN,
@@ -111,7 +111,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
 
     let left_paddle = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: -4.0, y: 0.0, z: 0.0 })
+            .with_position(Vec3::new(-4.0, 0.0, 0.0))
             .with_renderable(Renderable::Solid {
                 mesh: paddle_mesh.handle(),
                 color: color::RED,
@@ -128,7 +128,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     );
     let right_paddle = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 4.0, y: 0.0, z: 0.0 })
+            .with_position(Vec3::new(4.0, 0.0, 0.0))
             .with_renderable(Renderable::Solid {
                 mesh: paddle_mesh.handle(),
                 color: color::BLUE,
@@ -159,8 +159,8 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     let ball = scene.spawn(
         Object::new()
             .with_transform(Transform {
-                position: Vector3 { x: 0.0, y: 0.0, z: 0.0 },
-                scale: Vector3 { x: BALL_SIDE_LENGTH, y: BALL_SIDE_LENGTH, z: 1.0 },
+                position: Vec3::ZERO,
+                scale: Vec3::new(BALL_SIDE_LENGTH, BALL_SIDE_LENGTH, 1.0),
                 ..Transform::default()
             })
             .with_renderable(ball_renderable)
@@ -170,18 +170,18 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     // Digits sit above the play field (y < 0 in this Y-down convention).
     let left_digit = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: -1.0, y: -3.7, z: 0.0 })
+            .with_position(Vec3::new(-1.0, -3.7, 0.0))
             .with_behaviour(DigitBehaviour::new(gm, &digit_meshes)),
     );
     let right_digit = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 1.0, y: -3.7, z: 0.0 })
+            .with_position(Vec3::new(1.0, -3.7, 0.0))
             .with_behaviour(DigitBehaviour::new(gm, &digit_meshes)),
     );
 
     let welcome_label = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 0.0, y: -1.2, z: 0.0 })
+            .with_position(Vec3::new(0.0, -1.2, 0.0))
             .with_behaviour(TextLabelBehaviour::new(
                 gm,
                 &font_atlas,
@@ -192,7 +192,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     );
     let game_over_label = scene.spawn(
         Object::new()
-            .with_position(Vector3 { x: 0.0, y: -1.2, z: 0.0 })
+            .with_position(Vec3::new(0.0, -1.2, 0.0))
             .with_behaviour(TextLabelBehaviour::new(
                 gm,
                 &font_atlas,

@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use cgmath::{Matrix4, Vector3};
+use engine::{Mat4, Vec3};
 
 use engine::graphics_manager::structures::{hidden_transform, rect_mesh};
 use engine::graphics_manager::{GraphicsManager, ModelHandle};
@@ -93,26 +93,26 @@ impl Behaviour for DigitBehaviour {
 
     fn collect_renderables(
         &self,
-        parent_matrix: Matrix4<f32>,
-        out: &mut Vec<(ModelHandle, Matrix4<f32>)>,
+        parent_matrix: Mat4,
+        out: &mut Vec<(ModelHandle, Mat4)>,
     ) {
         let lit = SEGMENTS_FOR_DIGIT[(self.value % 10) as usize];
         let s = self.segment_size;
         let half = s / 2.0;
         // Local segment offsets (positive Y is downwards).
         let offsets = [
-            Vector3 { x: 0.0,    y: -s,    z: 0.0 }, // top
-            Vector3 { x: -half,  y: -half, z: 0.0 }, // top-left
-            Vector3 { x:  half,  y: -half, z: 0.0 }, // top-right
-            Vector3 { x: 0.0,    y: 0.0,   z: 0.0 }, // middle
-            Vector3 { x: -half,  y:  half, z: 0.0 }, // bottom-left
-            Vector3 { x:  half,  y:  half, z: 0.0 }, // bottom-right
-            Vector3 { x: 0.0,    y:  s,    z: 0.0 }, // bottom
+            Vec3::new( 0.0,   -s,    0.0), // top
+            Vec3::new(-half, -half,  0.0), // top-left
+            Vec3::new( half, -half,  0.0), // top-right
+            Vec3::new( 0.0,   0.0,   0.0), // middle
+            Vec3::new(-half,  half,  0.0), // bottom-left
+            Vec3::new( half,  half,  0.0), // bottom-right
+            Vec3::new( 0.0,   s,     0.0), // bottom
         ];
 
         for i in 0..7 {
             let m = if lit[i] {
-                parent_matrix * Matrix4::from_translation(offsets[i])
+                parent_matrix * Mat4::from_translation(offsets[i])
             } else {
                 // Park unlit segments off-screen. Every registered instance
                 // must emit a transform each frame or it would draw at the

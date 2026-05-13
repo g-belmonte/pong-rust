@@ -1,6 +1,6 @@
 use std::any::Any;
 
-use cgmath::Vector2;
+use engine::Vec2;
 use rand::Rng;
 
 use engine::audio::Sound;
@@ -14,7 +14,7 @@ use crate::wall::WallBehaviour;
 const BALL_TEXTURE_PNG: &[u8] = include_bytes!("../assets/tennis-ball.png");
 
 pub struct BallBehaviour {
-    pub velocity: Vector2<f32>,
+    pub velocity: Vec2,
     pub side_length: f32,
     // RAII: the texture must outlive every textured instance using it.
     // Stored here so the ball Object's lifetime governs the texture's.
@@ -50,7 +50,7 @@ impl BallBehaviour {
         };
         (
             Self {
-                velocity: Vector2 { x: 0.0, y: 0.0 },
+                velocity: Vec2::ZERO,
                 side_length,
                 _texture: texture,
                 top_wall,
@@ -68,10 +68,7 @@ impl BallBehaviour {
     /// Randomised serve, called by [`PhaseController`] on Space at kickoff.
     pub fn kickoff(&mut self) {
         let mut rng = rand::thread_rng();
-        let mut v = Vector2 {
-            x: -self.kickoff_speed_x,
-            y: rng.gen_range(-1.0..1.0),
-        };
+        let mut v = Vec2::new(-self.kickoff_speed_x, rng.gen_range(-1.0..1.0));
         if rand::random() {
             v.x = -v.x;
         }
@@ -79,7 +76,7 @@ impl BallBehaviour {
     }
 
     pub fn stop(&mut self) {
-        self.velocity = Vector2 { x: 0.0, y: 0.0 };
+        self.velocity = Vec2::ZERO;
     }
 }
 
@@ -123,7 +120,7 @@ impl Behaviour for BallBehaviour {
                     .scene
                     .get(pid)
                     .map(|o| o.transform.position)
-                    .unwrap_or_else(|| cgmath::vec3(0.0, 0.0, 0.0));
+                    .unwrap_or(engine::Vec3::ZERO);
                 let (w, h) = ctx
                     .scene
                     .behaviour::<PaddleBehaviour>(pid)

@@ -25,44 +25,45 @@
 //! exists in the workspace. A trait abstraction isn't worth introducing
 //! preemptively — see ARCHITECTURE.md's Phase 4 decision log.
 
-use cgmath::{Matrix4, Vector2, Vector3};
+use glam::{Mat4, Vec2, Vec3};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera2D {
-    pub centre: Vector2<f32>,
+    pub centre: Vec2,
     pub half_height: f32,
 }
 
 impl Default for Camera2D {
     fn default() -> Self {
         Self {
-            centre: Vector2::new(0.0, 0.0),
+            centre: Vec2::ZERO,
             half_height: 1.0,
         }
     }
 }
 
 impl Camera2D {
-    pub fn new(centre: Vector2<f32>, half_height: f32) -> Self {
+    pub fn new(centre: Vec2, half_height: f32) -> Self {
         Self { centre, half_height }
     }
 
     /// World → view: translate world so the camera centre sits at the origin.
-    pub fn view(&self) -> Matrix4<f32> {
-        Matrix4::from_translation(Vector3::new(-self.centre.x, -self.centre.y, 0.0))
+    pub fn view(&self) -> Mat4 {
+        Mat4::from_translation(Vec3::new(-self.centre.x, -self.centre.y, 0.0))
     }
 
     /// View → Vulkan clip space. `aspect = width / height` of the target.
     /// The depth range maps world z ∈ [-1, 1] → clip z ∈ [0, 1]; objects at
     /// z = 0 land mid-depth, which suits 2D scenes where everything sits on
-    /// the z = 0 plane.
-    pub fn proj(&self, aspect: f32) -> Matrix4<f32> {
+    /// the z = 0 plane. `Mat4::from_cols_array` takes 16 floats in
+    /// column-major order.
+    pub fn proj(&self, aspect: f32) -> Mat4 {
         let half_width = self.half_height * aspect;
-        Matrix4::new(
+        Mat4::from_cols_array(&[
             1.0 / half_width, 0.0,                    0.0, 0.0,
             0.0,              1.0 / self.half_height, 0.0, 0.0,
             0.0,              0.0,                    0.5, 0.0,
             0.0,              0.0,                    0.5, 1.0,
-        )
+        ])
     }
 }

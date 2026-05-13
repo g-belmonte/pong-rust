@@ -1,5 +1,5 @@
 use ash::vk;
-use cgmath::{Matrix4, Vector3};
+use glam::{Mat4, Vec3};
 
 use memoffset::offset_of;
 
@@ -10,16 +10,12 @@ use memoffset::offset_of;
 /// instance we therefore translate it far enough that perspective culls it
 /// rather than try to skip it from the draw list. Used by `Digit` (unlit
 /// segments) and `TextLabel` (hidden labels). See `hidden_transform`.
-pub const HIDDEN_TRANSLATION: Vector3<f32> = Vector3 {
-    x: 1000.0,
-    y: 1000.0,
-    z: 0.0,
-};
+pub const HIDDEN_TRANSLATION: Vec3 = Vec3::new(1000.0, 1000.0, 0.0);
 
 /// Convenience for the "park off-screen" pattern. Equivalent to
-/// `Matrix4::from_translation(HIDDEN_TRANSLATION)`.
-pub fn hidden_transform() -> Matrix4<f32> {
-    Matrix4::from_translation(HIDDEN_TRANSLATION)
+/// `Mat4::from_translation(HIDDEN_TRANSLATION)`.
+pub fn hidden_transform() -> Mat4 {
+    Mat4::from_translation(HIDDEN_TRANSLATION)
 }
 
 pub struct DeviceExtension {
@@ -94,8 +90,8 @@ pub fn rect_mesh(width: f32, height: f32) -> ModelMesh {
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]
 pub struct UniformBufferObject {
-    pub view: Matrix4<f32>,
-    pub proj: Matrix4<f32>,
+    pub view: Mat4,
+    pub proj: Mat4,
 }
 
 // Solid-colour vertex: position only. Per-instance colour comes through
@@ -126,13 +122,13 @@ impl Vertex {
 }
 
 // Per-instance data for the solid-colour pipeline. Layout must match the
-// vertex shader (locations 1..4 = mat4 columns, location 5 = colour). The
-// model matrix is in cgmath's column-major order, so the four columns map
+// vertex shader (locations 1..4 = mat4 columns, location 5 = colour). glam's
+// Mat4 is column-major with a 16-byte alignment, so the four columns map
 // directly to four vec4 attributes at offsets 0/16/32/48.
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]
 pub struct Instance {
-    pub model: Matrix4<f32>,
+    pub model: Mat4,
     pub color: [f32; 3],
 }
 impl Instance {
@@ -213,7 +209,7 @@ impl TexturedVertex {
 #[repr(C)]
 #[derive(Clone, Debug, Copy)]
 pub struct TexturedInstance {
-    pub model: Matrix4<f32>,
+    pub model: Mat4,
     pub uv_offset: [f32; 2],
     pub uv_scale: [f32; 2],
 }

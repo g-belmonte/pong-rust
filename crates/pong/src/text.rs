@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 
-use cgmath::{Matrix4, Vector3};
+use engine::{Mat4, Vec3};
 use fontdue::{Font, FontSettings};
 
 use engine::graphics_manager::structures::hidden_transform;
@@ -145,7 +145,7 @@ impl FontAtlas {
 // every label sharing the same atlas folds into a single `vkCmdDrawIndexed`.
 struct GlyphInstance {
     handle: ModelHandle,
-    local_offset: Vector3<f32>,
+    local_offset: Vec3,
     world_size: (f32, f32),
 }
 
@@ -198,11 +198,7 @@ impl TextLabelBehaviour {
                 let handle =
                     gm.register_textured_instance(atlas.texture.handle(), uv_offset, uv_scale);
 
-                let local_offset = Vector3 {
-                    x: tlx + w * 0.5,
-                    y: tly + h * 0.5,
-                    z: 0.0,
-                };
+                let local_offset = Vec3::new(tlx + w * 0.5, tly + h * 0.5, 0.0);
                 glyphs.push(GlyphInstance {
                     handle,
                     local_offset,
@@ -230,14 +226,14 @@ impl Behaviour for TextLabelBehaviour {
 
     fn collect_renderables(
         &self,
-        parent_matrix: Matrix4<f32>,
-        out: &mut Vec<(ModelHandle, Matrix4<f32>)>,
+        parent_matrix: Mat4,
+        out: &mut Vec<(ModelHandle, Mat4)>,
     ) {
         for g in &self.glyphs {
             let m = if self.visible {
                 parent_matrix
-                    * Matrix4::from_translation(g.local_offset)
-                    * Matrix4::from_nonuniform_scale(g.world_size.0, g.world_size.1, 1.0)
+                    * Mat4::from_translation(g.local_offset)
+                    * Mat4::from_scale(Vec3::new(g.world_size.0, g.world_size.1, 1.0))
             } else {
                 hidden_transform()
             };

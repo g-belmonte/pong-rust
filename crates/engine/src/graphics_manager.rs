@@ -6,7 +6,7 @@ pub mod structures;
 pub mod tools;
 pub mod window;
 
-use cgmath::Matrix4;
+use glam::Mat4;
 use constants::*;
 use structures::{QueueFamilyIndices, SurfaceStuff};
 
@@ -59,14 +59,14 @@ struct MeshBuffers {
 struct InstanceData {
     mesh: MeshHandle,
     color: [f32; 3],
-    last_model: Matrix4<f32>,
+    last_model: Mat4,
 }
 
 struct TexturedInstanceData {
     texture: TextureHandle,
     uv_offset: [f32; 2],
     uv_scale: [f32; 2],
-    last_model: Matrix4<f32>,
+    last_model: Mat4,
 }
 
 fn destroy_mesh(device: &ash::Device, mesh: &MeshBuffers) {
@@ -98,8 +98,8 @@ fn destroy_texture_resources(
 fn write_camera_ubos(
     device: &ash::Device,
     memories: &[vk::DeviceMemory],
-    view: Matrix4<f32>,
-    proj: Matrix4<f32>,
+    view: Mat4,
+    proj: Mat4,
 ) {
     let ubo = UniformBufferObject { view, proj };
     let buffer_size = ::std::mem::size_of::<UniformBufferObject>() as u64;
@@ -172,8 +172,8 @@ pub struct GraphicsManager {
     // per-swapchain-image UBO, so per-frame mutation pays a synchronisation
     // cost — fine for today's static-camera games; worth revisiting if a game
     // moves the camera every frame.
-    last_camera_view: Option<Matrix4<f32>>,
-    last_camera_proj: Option<Matrix4<f32>>,
+    last_camera_view: Option<Mat4>,
+    last_camera_proj: Option<Mat4>,
 
     // ----- Registered geometry, instances, and textures (survive recreation) -----
     meshes: HashMap<MeshHandle, MeshBuffers>,
@@ -484,7 +484,7 @@ impl GraphicsManager {
             InstanceData {
                 mesh,
                 color,
-                last_model: Matrix4::from_scale(1.0),
+                last_model: Mat4::IDENTITY,
             },
         );
         handle
@@ -612,7 +612,7 @@ impl GraphicsManager {
                 texture,
                 uv_offset,
                 uv_scale,
-                last_model: Matrix4::from_scale(1.0),
+                last_model: Mat4::IDENTITY,
             },
         );
         handle
@@ -658,7 +658,7 @@ impl GraphicsManager {
         self.last_camera_proj = Some(proj);
     }
 
-    pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Matrix4<f32>)]) {
+    pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Mat4)]) {
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
