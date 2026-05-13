@@ -1,12 +1,12 @@
 use crate::graphics_manager::debug::ValidationInfo;
 use crate::graphics_manager::structures::DeviceExtension;
-use ash::vk_make_version;
+use ash::vk;
 
 use std::os::raw::c_char;
 
-pub const APPLICATION_VERSION: u32 = vk_make_version!(1, 0, 0);
-pub const ENGINE_VERSION: u32 = vk_make_version!(1, 0, 0);
-pub const API_VERSION: u32 = vk_make_version!(1, 0, 92);
+pub const APPLICATION_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
+pub const ENGINE_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
+pub const API_VERSION: u32 = vk::make_api_version(0, 1, 0, 92);
 
 pub const WINDOW_TITLE: &str = "Pong-rust";
 pub const WINDOW_WIDTH: u32 = 800;
@@ -39,6 +39,6 @@ pub const MAX_TEXTURED_INSTANCES: usize = 128;
 
 impl DeviceExtension {
     pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
-        [ash::extensions::khr::Swapchain::name().as_ptr()]
+        [ash::khr::swapchain::NAME.as_ptr()]
     }
 }

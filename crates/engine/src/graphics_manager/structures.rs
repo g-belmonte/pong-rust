@@ -24,11 +24,11 @@ pub struct DeviceExtension {
 }
 
 pub struct SurfaceStuff {
-    pub surface_loader: ash::extensions::khr::Surface,
+    pub surface_loader: ash::khr::surface::Instance,
     pub surface: vk::SurfaceKHR,
 }
 pub struct SwapChainStuff {
-    pub swapchain_loader: ash::extensions::khr::Swapchain,
+    pub swapchain_loader: ash::khr::swapchain::Device,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: Vec<vk::Image>,
     pub swapchain_format: vk::Format,

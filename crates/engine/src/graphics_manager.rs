@@ -12,8 +12,6 @@ use structures::{QueueFamilyIndices, SurfaceStuff};
 
 use crate::camera::Camera2D;
 
-use ash::version::DeviceV1_0;
-use ash::version::InstanceV1_0;
 use ash::vk;
 
 use std::collections::HashMap;
@@ -86,7 +84,7 @@ fn destroy_texture_resources(
     unsafe {
         // Pool was created with FREE_DESCRIPTOR_SET so this is legal.
         if !tex.descriptor_sets.is_empty() {
-            device.free_descriptor_sets(descriptor_pool, &tex.descriptor_sets);
+            let _ = device.free_descriptor_sets(descriptor_pool, &tex.descriptor_sets);
         }
         device.destroy_sampler(tex.sampler, None);
         device.destroy_image_view(tex.view, None);
@@ -123,9 +121,9 @@ pub struct GraphicsManager {
     // ----- Vulkan core (created once, destroyed at shutdown) -----
     _entry: ash::Entry,
     instance: ash::Instance,
-    surface_loader: ash::extensions::khr::Surface,
+    surface_loader: ash::khr::surface::Instance,
     surface: vk::SurfaceKHR,
-    debug_utils_loader: ash::extensions::ext::DebugUtils,
+    debug_utils_loader: ash::ext::debug_utils::Instance,
     debug_merssager: vk::DebugUtilsMessengerEXT,
     physical_device: vk::PhysicalDevice,
     physical_device_memory_properties: vk::PhysicalDeviceMemoryProperties,
@@ -135,7 +133,7 @@ pub struct GraphicsManager {
     present_queue: vk::Queue,
 
     // ----- Swapchain + dependent state (rebuilt on resize / OUT_OF_DATE) -----
-    swapchain_loader: ash::extensions::khr::Swapchain,
+    swapchain_loader: ash::khr::swapchain::Device,
     swapchain: vk::SwapchainKHR,
     swapchain_images: Vec<vk::Image>,
     swapchain_format: vk::Format,
@@ -224,7 +222,7 @@ impl GraphicsManager {
     pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> GraphicsManager {
         let window = window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
-        let entry = ash::Entry::new().unwrap();
+        let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
         let instance = share::create_instance(
             &entry,
             WINDOW_TITLE,
@@ -881,6 +879,7 @@ impl GraphicsManager {
             p_command_buffers: &command_buffer,
             signal_semaphore_count: signal_semaphores.len() as u32,
             p_signal_semaphores: signal_semaphores.as_ptr(),
+            ..Default::default()
         }];
 
         unsafe {
@@ -908,6 +907,7 @@ impl GraphicsManager {
             p_swapchains: swapchains.as_ptr(),
             p_image_indices: &image_index,
             p_results: ptr::null_mut(),
+            ..Default::default()
         };
 
         let result = unsafe {
@@ -1132,9 +1132,7 @@ fn create_pipeline_cache(device: &ash::Device) -> vk::PipelineCache {
     let initial = pipeline_cache_path()
         .and_then(|p| std::fs::read(p).ok())
         .unwrap_or_default();
-    let create_info = vk::PipelineCacheCreateInfo::builder()
-        .initial_data(&initial)
-        .build();
+    let create_info = vk::PipelineCacheCreateInfo::default().initial_data(&initial);
     unsafe {
         device
             .create_pipeline_cache(&create_info, None)

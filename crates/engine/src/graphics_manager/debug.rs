@@ -1,14 +1,12 @@
-use ash::version::EntryV1_0;
 use ash::vk;
 
 use std::ffi::CStr;
 use std::os::raw::c_void;
-use std::ptr;
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
     message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
     message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+    p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT<'_>,
     _p_user_data: *mut c_void,
 ) -> vk::Bool32 {
     let severity = match message_severity {
@@ -39,9 +37,11 @@ pub fn check_validation_layer_support(
     entry: &ash::Entry,
     required_validation_layers: &[&str],
 ) -> bool {
-    let layer_properties = entry
-        .enumerate_instance_layer_properties()
-        .expect("Failed to enumerate Instance Layers Properties");
+    let layer_properties = unsafe {
+        entry
+            .enumerate_instance_layer_properties()
+            .expect("Failed to enumerate Instance Layers Properties")
+    };
 
     if layer_properties.is_empty() {
         eprintln!("No available layers.");
@@ -71,11 +71,11 @@ pub fn setup_debug_utils(
     is_enable_debug: bool,
     entry: &ash::Entry,
     instance: &ash::Instance,
-) -> (ash::extensions::ext::DebugUtils, vk::DebugUtilsMessengerEXT) {
-    let debug_utils_loader = ash::extensions::ext::DebugUtils::new(entry, instance);
+) -> (ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT) {
+    let debug_utils_loader = ash::ext::debug_utils::Instance::new(entry, instance);
 
     if !is_enable_debug {
-        (debug_utils_loader, ash::vk::DebugUtilsMessengerEXT::null())
+        (debug_utils_loader, vk::DebugUtilsMessengerEXT::null())
     } else {
         let messenger_ci = populate_debug_messenger_create_info();
 
@@ -89,19 +89,16 @@ pub fn setup_debug_utils(
     }
 }
 
-pub fn populate_debug_messenger_create_info() -> vk::DebugUtilsMessengerCreateInfoEXT {
-    vk::DebugUtilsMessengerCreateInfoEXT {
-        s_type: vk::StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        p_next: ptr::null(),
-        flags: vk::DebugUtilsMessengerCreateFlagsEXT::empty(),
-        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING |
-            // vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE |
-            // vk::DebugUtilsMessageSeverityFlagsEXT::INFO |
-            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-        message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-            | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-            | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-        pfn_user_callback: Some(vulkan_debug_utils_callback),
-        p_user_data: ptr::null_mut(),
-    }
+pub fn populate_debug_messenger_create_info() -> vk::DebugUtilsMessengerCreateInfoEXT<'static> {
+    vk::DebugUtilsMessengerCreateInfoEXT::default()
+        .message_severity(
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+        )
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+        )
+        .pfn_user_callback(Some(vulkan_debug_utils_callback))
 }

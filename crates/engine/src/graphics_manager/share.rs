@@ -1,10 +1,6 @@
-use ash::version::DeviceV1_0;
-use ash::version::EntryV1_0;
-use ash::version::InstanceV1_0;
 use ash::vk;
 
 use std::ffi::CString;
-use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::ptr;
 
@@ -70,6 +66,7 @@ pub fn create_instance(
         p_engine_name: engine_name.as_ptr(),
         engine_version: ENGINE_VERSION,
         api_version: API_VERSION,
+        ..Default::default()
     };
 
     // This create info used to debug issues in vk::createInstance and vk::destroyInstance.
@@ -108,6 +105,7 @@ pub fn create_instance(
         } as u32,
         pp_enabled_extension_names: extension_names.as_ptr(),
         enabled_extension_count: extension_names.len() as u32,
+        ..Default::default()
     };
 
     let instance: ash::Instance = unsafe {
@@ -127,7 +125,7 @@ pub fn create_surface(
     let surface = unsafe {
         platforms::create_surface(entry, instance, window).expect("Failed to create surface.")
     };
-    let surface_loader = ash::extensions::khr::Surface::new(entry, instance);
+    let surface_loader = ash::khr::surface::Instance::new(entry, instance);
 
     SurfaceStuff {
         surface_loader,
@@ -213,6 +211,7 @@ pub fn create_logical_device(
             queue_family_index: queue_family,
             p_queue_priorities: queue_priorities.as_ptr(),
             queue_count: queue_priorities.len() as u32,
+            ..Default::default()
         })
         .collect();
 
@@ -221,15 +220,11 @@ pub fn create_logical_device(
         ..Default::default()
     };
 
-    let required_validation_layer_raw_names: Vec<CString> = validation
-        .required_validation_layers
-        .iter()
-        .map(|layer_name| CString::new(*layer_name).unwrap())
-        .collect();
-    let enable_layer_names: Vec<*const c_char> = required_validation_layer_raw_names
-        .iter()
-        .map(|layer_name| layer_name.as_ptr())
-        .collect();
+    // Per-device validation layers were deprecated and ignored by modern Vulkan
+    // loaders — validation is enabled at the instance level only. We no longer
+    // wire `enabled_layer_*` here; the `validation` arg is kept for the call-site
+    // signature but unused at device creation.
+    let _ = validation;
 
     let enable_extension_names = device_extensions.get_extensions_raw_names();
 
@@ -239,19 +234,10 @@ pub fn create_logical_device(
         flags: vk::DeviceCreateFlags::empty(),
         queue_create_info_count: queue_create_infos.len() as u32,
         p_queue_create_infos: queue_create_infos.as_ptr(),
-        enabled_layer_count: if validation.is_enable {
-            enable_layer_names.len()
-        } else {
-            0
-        } as u32,
-        pp_enabled_layer_names: if validation.is_enable {
-            enable_layer_names.as_ptr()
-        } else {
-            ptr::null()
-        },
         enabled_extension_count: enable_extension_names.len() as u32,
         pp_enabled_extension_names: enable_extension_names.as_ptr(),
         p_enabled_features: &physical_device_features,
+        ..Default::default()
     };
 
     let device: ash::Device = unsafe {
@@ -288,6 +274,7 @@ pub fn find_queue_family(
                     index as u32,
                     surface_stuff.surface,
                 )
+                .unwrap_or(false)
         };
         if queue_family.queue_count > 0 && is_present_support {
             queue_family_indices.present_family = Some(index as u32);
@@ -410,9 +397,10 @@ pub fn create_swapchain(
         clipped: vk::TRUE,
         old_swapchain: vk::SwapchainKHR::null(),
         image_array_layers: 1,
+        ..Default::default()
     };
 
-    let swapchain_loader = ash::extensions::khr::Swapchain::new(instance, device);
+    let swapchain_loader = ash::khr::swapchain::Device::new(instance, device);
     let swapchain = unsafe {
         swapchain_loader
             .create_swapchain(&swapchain_create_info, None)
@@ -486,6 +474,7 @@ pub fn choose_swapchain_extent(
                 capabilities.min_image_extent.height,
                 capabilities.max_image_extent.height,
             ),
+            ..Default::default()
         }
     }
 }
@@ -497,6 +486,7 @@ pub fn create_shader_module(device: &ash::Device, code: Vec<u8>) -> vk::ShaderMo
         flags: vk::ShaderModuleCreateFlags::empty(),
         code_size: code.len(),
         p_code: code.as_ptr() as *const u32,
+        ..Default::default()
     };
 
     unsafe {
@@ -522,6 +512,7 @@ pub fn create_buffer(
         sharing_mode: vk::SharingMode::EXCLUSIVE,
         queue_family_index_count: 0,
         p_queue_family_indices: ptr::null(),
+        ..Default::default()
     };
 
     let buffer = unsafe {
@@ -542,6 +533,7 @@ pub fn create_buffer(
         p_next: ptr::null(),
         allocation_size: mem_requirements.size,
         memory_type_index: memory_type,
+        ..Default::default()
     };
 
     let buffer_memory = unsafe {
@@ -573,6 +565,7 @@ pub fn copy_buffer(
         src_offset: 0,
         dst_offset: 0,
         size,
+        ..Default::default()
     }];
 
     unsafe {
@@ -592,6 +585,7 @@ pub fn begin_single_time_command(
         command_buffer_count: 1,
         command_pool,
         level: vk::CommandBufferLevel::PRIMARY,
+        ..Default::default()
     };
 
     let command_buffer = unsafe {
@@ -605,6 +599,7 @@ pub fn begin_single_time_command(
         p_next: ptr::null(),
         p_inheritance_info: ptr::null(),
         flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+        ..Default::default()
     };
 
     unsafe {
@@ -640,6 +635,7 @@ pub fn end_single_time_command(
         p_command_buffers: buffers_to_submit.as_ptr(),
         signal_semaphore_count: 0,
         p_signal_semaphores: ptr::null(),
+        ..Default::default()
     }];
 
     unsafe {
@@ -679,11 +675,13 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
         initial_layout: vk::ImageLayout::UNDEFINED,
         final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+        ..Default::default()
     };
 
     let color_attachment_ref = vk::AttachmentReference {
         attachment: 0,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        ..Default::default()
     };
 
     let subpasses = [vk::SubpassDescription {
@@ -697,6 +695,7 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         p_resolve_attachments: ptr::null(),
         preserve_attachment_count: 0,
         p_preserve_attachments: ptr::null(),
+        ..Default::default()
     }];
 
     let render_pass_attachments = [color_attachment];
@@ -709,6 +708,7 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         src_access_mask: vk::AccessFlags::empty(),
         dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
         dependency_flags: vk::DependencyFlags::empty(),
+        ..Default::default()
     }];
 
     let renderpass_create_info = vk::RenderPassCreateInfo {
@@ -721,6 +721,7 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         p_subpasses: subpasses.as_ptr(),
         dependency_count: subpass_dependencies.len() as u32,
         p_dependencies: subpass_dependencies.as_ptr(),
+        ..Default::default()
     };
 
     unsafe {
@@ -751,6 +752,7 @@ pub fn create_framebuffers(
                 width: swapchain_extent.width,
                 height: swapchain_extent.height,
                 layers: 1,
+                ..Default::default()
             };
 
             unsafe {
@@ -772,6 +774,7 @@ pub fn create_command_pool(
         // Per-frame re-recording resets individual buffers via vkResetCommandBuffer.
         flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         queue_family_index: queue_families.graphics_family.unwrap(),
+        ..Default::default()
     };
 
     unsafe {
@@ -792,6 +795,7 @@ pub fn allocate_command_buffers(
         command_buffer_count: count,
         command_pool,
         level: vk::CommandBufferLevel::PRIMARY,
+        ..Default::default()
     };
 
     unsafe {
@@ -817,6 +821,7 @@ pub fn record_command_buffer(
         p_next: ptr::null(),
         p_inheritance_info: ptr::null(),
         flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+        ..Default::default()
     };
 
     let clear_values = [vk::ClearValue {
@@ -836,6 +841,7 @@ pub fn record_command_buffer(
         },
         clear_value_count: clear_values.len() as u32,
         p_clear_values: clear_values.as_ptr(),
+        ..Default::default()
     };
 
     unsafe {
@@ -959,12 +965,14 @@ pub fn create_sync_objects(
         s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::SemaphoreCreateFlags::empty(),
+        ..Default::default()
     };
 
     let fence_create_info = vk::FenceCreateInfo {
         s_type: vk::StructureType::FENCE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::FenceCreateFlags::SIGNALED,
+        ..Default::default()
     };
 
     for _ in 0..max_frame_in_flight {
@@ -1005,6 +1013,7 @@ pub fn create_render_finished_semaphores(
         s_type: vk::StructureType::SEMAPHORE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::SemaphoreCreateFlags::empty(),
+        ..Default::default()
     };
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
@@ -1148,10 +1157,12 @@ pub fn create_descriptor_pool(
         vk::DescriptorPoolSize {
             ty: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: camera_only_set_count + textured_set_count,
+            ..Default::default()
         },
         vk::DescriptorPoolSize {
             ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             descriptor_count: textured_set_count,
+            ..Default::default()
         },
     ];
 
@@ -1163,6 +1174,7 @@ pub fn create_descriptor_pool(
         max_sets: camera_only_set_count + textured_set_count,
         pool_size_count: pool_sizes.len() as u32,
         p_pool_sizes: pool_sizes.as_ptr(),
+        ..Default::default()
     };
 
     unsafe {
@@ -1180,6 +1192,7 @@ pub fn create_textured_descriptor_set_layout(device: &ash::Device) -> vk::Descri
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::VERTEX,
             p_immutable_samplers: ptr::null(),
+            ..Default::default()
         },
         vk::DescriptorSetLayoutBinding {
             binding: 1,
@@ -1187,6 +1200,7 @@ pub fn create_textured_descriptor_set_layout(device: &ash::Device) -> vk::Descri
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::FRAGMENT,
             p_immutable_samplers: ptr::null(),
+            ..Default::default()
         },
     ];
 
@@ -1196,6 +1210,7 @@ pub fn create_textured_descriptor_set_layout(device: &ash::Device) -> vk::Descri
         flags: vk::DescriptorSetLayoutCreateFlags::empty(),
         binding_count: bindings.len() as u32,
         p_bindings: bindings.as_ptr(),
+        ..Default::default()
     };
 
     unsafe {
@@ -1225,6 +1240,7 @@ pub fn create_textured_descriptor_sets(
         descriptor_pool,
         descriptor_set_count: count as u32,
         p_set_layouts: layouts.as_ptr(),
+        ..Default::default()
     };
 
     let descriptor_sets = unsafe {
@@ -1238,11 +1254,13 @@ pub fn create_textured_descriptor_sets(
             buffer: camera_uniform_buffers[i],
             offset: 0,
             range: ::std::mem::size_of::<UniformBufferObject>() as u64,
+            ..Default::default()
         }];
         let image_info = [vk::DescriptorImageInfo {
             sampler: texture_sampler,
             image_view: texture_image_view,
             image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ..Default::default()
         }];
         let writes = [
             vk::WriteDescriptorSet {
@@ -1256,6 +1274,7 @@ pub fn create_textured_descriptor_sets(
                 p_image_info: ptr::null(),
                 p_buffer_info: buffer_info.as_ptr(),
                 p_texel_buffer_view: ptr::null(),
+                ..Default::default()
             },
             vk::WriteDescriptorSet {
                 s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
@@ -1268,6 +1287,7 @@ pub fn create_textured_descriptor_sets(
                 p_image_info: image_info.as_ptr(),
                 p_buffer_info: ptr::null(),
                 p_texel_buffer_view: ptr::null(),
+                ..Default::default()
             },
         ];
         unsafe { device.update_descriptor_sets(&writes, &[]) };
@@ -1294,6 +1314,7 @@ pub fn create_descriptor_sets(
         descriptor_pool,
         descriptor_set_count: swapchain_images_size as u32,
         p_set_layouts: layouts.as_ptr(),
+        ..Default::default()
     };
 
     let descriptor_sets = unsafe {
@@ -1307,6 +1328,7 @@ pub fn create_descriptor_sets(
             buffer: uniforms_buffers[i],
             offset: 0,
             range: ::std::mem::size_of::<UniformBufferObject>() as u64,
+            ..Default::default()
         }];
 
         let descriptor_write_sets = [vk::WriteDescriptorSet {
@@ -1320,6 +1342,7 @@ pub fn create_descriptor_sets(
             p_image_info: ptr::null(),
             p_buffer_info: descriptor_buffer_info.as_ptr(),
             p_texel_buffer_view: ptr::null(),
+            ..Default::default()
         }];
 
         unsafe {
@@ -1337,6 +1360,7 @@ pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLa
         descriptor_count: 1,
         stage_flags: vk::ShaderStageFlags::VERTEX,
         p_immutable_samplers: ptr::null(),
+        ..Default::default()
     }];
 
     let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo {
@@ -1345,6 +1369,7 @@ pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLa
         flags: vk::DescriptorSetLayoutCreateFlags::empty(),
         binding_count: ubo_layout_bindings.len() as u32,
         p_bindings: ubo_layout_bindings.as_ptr(),
+        ..Default::default()
     };
 
     unsafe {
@@ -1454,6 +1479,7 @@ pub fn upload_rgba_image(
         queue_family_index_count: 0,
         p_queue_family_indices: ptr::null(),
         initial_layout: vk::ImageLayout::UNDEFINED,
+        ..Default::default()
     };
 
     let texture_image = unsafe {
@@ -1473,6 +1499,7 @@ pub fn upload_rgba_image(
         p_next: ptr::null(),
         allocation_size: mem_requirements.size,
         memory_type_index: memory_type,
+        ..Default::default()
     };
     let texture_image_memory = unsafe {
         device
@@ -1564,6 +1591,7 @@ fn transition_image_layout(
             base_array_layer: 0,
             layer_count: 1,
         },
+        ..Default::default()
     };
 
     unsafe {
@@ -1605,6 +1633,7 @@ fn copy_buffer_to_image(
         },
         image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
         image_extent: vk::Extent3D { width, height, depth: 1 },
+        ..Default::default()
     };
 
     unsafe {
@@ -1643,6 +1672,7 @@ pub fn create_texture_sampler(device: &ash::Device) -> vk::Sampler {
         max_lod: 0.0,
         border_color: vk::BorderColor::INT_OPAQUE_BLACK,
         unnormalized_coordinates: vk::FALSE,
+        ..Default::default()
     };
     unsafe {
         device
@@ -1699,6 +1729,7 @@ pub fn create_image_view(
             layer_count: 1,
         },
         image,
+        ..Default::default()
     };
 
     unsafe {
@@ -1736,6 +1767,7 @@ pub fn create_graphics_pipeline(
             p_name: main_function_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage: vk::ShaderStageFlags::VERTEX,
+            ..Default::default()
         },
         vk::PipelineShaderStageCreateInfo {
             // Fragment Shader
@@ -1746,6 +1778,7 @@ pub fn create_graphics_pipeline(
             p_name: main_function_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage: vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
         },
     ];
 
@@ -1770,6 +1803,7 @@ pub fn create_graphics_pipeline(
         p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
         vertex_binding_description_count: binding_descriptions.len() as u32,
         p_vertex_binding_descriptions: binding_descriptions.as_ptr(),
+        ..Default::default()
     };
     let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -1777,6 +1811,7 @@ pub fn create_graphics_pipeline(
         p_next: ptr::null(),
         primitive_restart_enable: vk::FALSE,
         topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+        ..Default::default()
     };
 
     let viewports = [vk::Viewport {
@@ -1786,11 +1821,13 @@ pub fn create_graphics_pipeline(
         height: swapchain_extent.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
+        ..Default::default()
     }];
 
     let scissors = [vk::Rect2D {
         offset: vk::Offset2D { x: 0, y: 0 },
         extent: swapchain_extent,
+        ..Default::default()
     }];
 
     let viewport_state_create_info = vk::PipelineViewportStateCreateInfo {
@@ -1801,6 +1838,7 @@ pub fn create_graphics_pipeline(
         p_scissors: scissors.as_ptr(),
         viewport_count: viewports.len() as u32,
         p_viewports: viewports.as_ptr(),
+        ..Default::default()
     };
 
     let rasterization_state_create_info = vk::PipelineRasterizationStateCreateInfo {
@@ -1817,6 +1855,7 @@ pub fn create_graphics_pipeline(
         depth_bias_constant_factor: 0.0,
         depth_bias_enable: vk::FALSE,
         depth_bias_slope_factor: 0.0,
+        ..Default::default()
     };
 
     let multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo {
@@ -1829,6 +1868,7 @@ pub fn create_graphics_pipeline(
         p_sample_mask: ptr::null(),
         alpha_to_one_enable: vk::FALSE,
         alpha_to_coverage_enable: vk::FALSE,
+        ..Default::default()
     };
 
     let stencil_state = vk::StencilOpState {
@@ -1839,6 +1879,7 @@ pub fn create_graphics_pipeline(
         compare_mask: 0,
         write_mask: 0,
         reference: 0,
+        ..Default::default()
     };
 
     let depth_state_create_info = vk::PipelineDepthStencilStateCreateInfo {
@@ -1854,17 +1895,19 @@ pub fn create_graphics_pipeline(
         back: stencil_state,
         max_depth_bounds: 1.0,
         min_depth_bounds: 0.0,
+        ..Default::default()
     };
 
     let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
         blend_enable: vk::FALSE,
-        color_write_mask: vk::ColorComponentFlags::all(),
+        color_write_mask: vk::ColorComponentFlags::RGBA,
         src_color_blend_factor: vk::BlendFactor::ONE,
         dst_color_blend_factor: vk::BlendFactor::ZERO,
         color_blend_op: vk::BlendOp::ADD,
         src_alpha_blend_factor: vk::BlendFactor::ONE,
         dst_alpha_blend_factor: vk::BlendFactor::ZERO,
         alpha_blend_op: vk::BlendOp::ADD,
+        ..Default::default()
     }];
 
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
@@ -1876,6 +1919,7 @@ pub fn create_graphics_pipeline(
         attachment_count: color_blend_attachment_states.len() as u32,
         p_attachments: color_blend_attachment_states.as_ptr(),
         blend_constants: [0.0, 0.0, 0.0, 0.0],
+        ..Default::default()
     };
 
     let set_layouts = [ubo_set_layout];
@@ -1891,6 +1935,7 @@ pub fn create_graphics_pipeline(
         p_set_layouts: set_layouts.as_ptr(),
         push_constant_range_count: 0,
         p_push_constant_ranges: ptr::null(),
+        ..Default::default()
     };
 
     let pipeline_layout = unsafe {
@@ -1919,6 +1964,7 @@ pub fn create_graphics_pipeline(
         subpass: 0,
         base_pipeline_handle: vk::Pipeline::null(),
         base_pipeline_index: -1,
+        ..Default::default()
     }];
 
     let graphics_pipelines = unsafe {
@@ -1966,6 +2012,7 @@ pub fn create_textured_graphics_pipeline(
             p_name: main_function_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage: vk::ShaderStageFlags::VERTEX,
+            ..Default::default()
         },
         vk::PipelineShaderStageCreateInfo {
             s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1975,6 +2022,7 @@ pub fn create_textured_graphics_pipeline(
             p_name: main_function_name.as_ptr(),
             p_specialization_info: ptr::null(),
             stage: vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
         },
     ];
 
@@ -1998,6 +2046,7 @@ pub fn create_textured_graphics_pipeline(
         p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
         vertex_binding_description_count: binding_descriptions.len() as u32,
         p_vertex_binding_descriptions: binding_descriptions.as_ptr(),
+        ..Default::default()
     };
     let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -2005,6 +2054,7 @@ pub fn create_textured_graphics_pipeline(
         p_next: ptr::null(),
         primitive_restart_enable: vk::FALSE,
         topology: vk::PrimitiveTopology::TRIANGLE_LIST,
+        ..Default::default()
     };
 
     let viewports = [vk::Viewport {
@@ -2014,11 +2064,13 @@ pub fn create_textured_graphics_pipeline(
         height: swapchain_extent.height as f32,
         min_depth: 0.0,
         max_depth: 1.0,
+        ..Default::default()
     }];
 
     let scissors = [vk::Rect2D {
         offset: vk::Offset2D { x: 0, y: 0 },
         extent: swapchain_extent,
+        ..Default::default()
     }];
 
     let viewport_state_create_info = vk::PipelineViewportStateCreateInfo {
@@ -2029,6 +2081,7 @@ pub fn create_textured_graphics_pipeline(
         p_scissors: scissors.as_ptr(),
         viewport_count: viewports.len() as u32,
         p_viewports: viewports.as_ptr(),
+        ..Default::default()
     };
 
     let rasterization_state_create_info = vk::PipelineRasterizationStateCreateInfo {
@@ -2045,6 +2098,7 @@ pub fn create_textured_graphics_pipeline(
         depth_bias_constant_factor: 0.0,
         depth_bias_enable: vk::FALSE,
         depth_bias_slope_factor: 0.0,
+        ..Default::default()
     };
 
     let multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo {
@@ -2057,6 +2111,7 @@ pub fn create_textured_graphics_pipeline(
         p_sample_mask: ptr::null(),
         alpha_to_one_enable: vk::FALSE,
         alpha_to_coverage_enable: vk::FALSE,
+        ..Default::default()
     };
 
     let stencil_state = vk::StencilOpState {
@@ -2067,6 +2122,7 @@ pub fn create_textured_graphics_pipeline(
         compare_mask: 0,
         write_mask: 0,
         reference: 0,
+        ..Default::default()
     };
 
     let depth_state_create_info = vk::PipelineDepthStencilStateCreateInfo {
@@ -2082,17 +2138,19 @@ pub fn create_textured_graphics_pipeline(
         back: stencil_state,
         max_depth_bounds: 1.0,
         min_depth_bounds: 0.0,
+        ..Default::default()
     };
 
     let color_blend_attachment_states = [vk::PipelineColorBlendAttachmentState {
         blend_enable: vk::FALSE,
-        color_write_mask: vk::ColorComponentFlags::all(),
+        color_write_mask: vk::ColorComponentFlags::RGBA,
         src_color_blend_factor: vk::BlendFactor::ONE,
         dst_color_blend_factor: vk::BlendFactor::ZERO,
         color_blend_op: vk::BlendOp::ADD,
         src_alpha_blend_factor: vk::BlendFactor::ONE,
         dst_alpha_blend_factor: vk::BlendFactor::ZERO,
         alpha_blend_op: vk::BlendOp::ADD,
+        ..Default::default()
     }];
 
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
@@ -2104,6 +2162,7 @@ pub fn create_textured_graphics_pipeline(
         attachment_count: color_blend_attachment_states.len() as u32,
         p_attachments: color_blend_attachment_states.as_ptr(),
         blend_constants: [0.0, 0.0, 0.0, 0.0],
+        ..Default::default()
     };
 
     let set_layouts = [textured_set_layout];
@@ -2117,6 +2176,7 @@ pub fn create_textured_graphics_pipeline(
         p_set_layouts: set_layouts.as_ptr(),
         push_constant_range_count: 0,
         p_push_constant_ranges: ptr::null(),
+        ..Default::default()
     };
 
     let pipeline_layout = unsafe {
@@ -2145,6 +2205,7 @@ pub fn create_textured_graphics_pipeline(
         subpass: 0,
         base_pipeline_handle: vk::Pipeline::null(),
         base_pipeline_index: -1,
+        ..Default::default()
     }];
 
     let graphics_pipelines = unsafe {

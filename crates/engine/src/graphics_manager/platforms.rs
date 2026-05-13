@@ -1,15 +1,14 @@
-use ash::version::{EntryV1_0, InstanceV1_0};
 use ash::vk;
 
 #[cfg(target_os = "windows")]
-use ash::extensions::khr::Win32Surface;
+use ash::khr::win32_surface;
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-use ash::extensions::khr::XlibSurface;
+use ash::khr::xlib_surface;
 #[cfg(target_os = "macos")]
-use ash::extensions::mvk::MacOSSurface;
+use ash::mvk::macos_surface;
 
-use ash::extensions::ext::DebugUtils;
-use ash::extensions::khr::Surface;
+use ash::ext::debug_utils;
+use ash::khr::surface;
 
 #[cfg(target_os = "macos")]
 use cocoa::appkit::{NSView, NSWindow};
@@ -24,63 +23,57 @@ use objc::runtime::YES;
 #[cfg(target_os = "macos")]
 pub fn required_extension_names() -> Vec<*const i8> {
     vec![
-        Surface::name().as_ptr(),
-        MacOSSurface::name().as_ptr(),
-        DebugUtils::name().as_ptr(),
+        surface::NAME.as_ptr(),
+        macos_surface::NAME.as_ptr(),
+        debug_utils::NAME.as_ptr(),
     ]
 }
 
 #[cfg(windows)]
 pub fn required_extension_names() -> Vec<*const i8> {
     vec![
-        Surface::name().as_ptr(),
-        Win32Surface::name().as_ptr(),
-        DebugUtils::name().as_ptr(),
+        surface::NAME.as_ptr(),
+        win32_surface::NAME.as_ptr(),
+        debug_utils::NAME.as_ptr(),
     ]
 }
 
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
 pub fn required_extension_names() -> Vec<*const i8> {
     vec![
-        Surface::name().as_ptr(),
-        XlibSurface::name().as_ptr(),
-        DebugUtils::name().as_ptr(),
+        surface::NAME.as_ptr(),
+        xlib_surface::NAME.as_ptr(),
+        debug_utils::NAME.as_ptr(),
     ]
 }
 // ------------------------------------------------------------------------
 
 // create surface ---------------------------------------------------------
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-    entry: &E,
-    instance: &I,
+pub unsafe fn create_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
-    use std::ptr;
     use winit::platform::unix::WindowExtUnix;
 
     let x11_display = window.xlib_display().unwrap();
     let x11_window = window.xlib_window().unwrap();
-    let x11_create_info = vk::XlibSurfaceCreateInfoKHR {
-        s_type: vk::StructureType::XLIB_SURFACE_CREATE_INFO_KHR,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        window: x11_window as vk::Window,
-        dpy: x11_display as *mut vk::Display,
-    };
-    let xlib_surface_loader = XlibSurface::new(entry, instance);
+    let x11_create_info = vk::XlibSurfaceCreateInfoKHR::default()
+        .window(x11_window as vk::Window)
+        .dpy(x11_display as *mut vk::Display);
+    let xlib_surface_loader = xlib_surface::Instance::new(entry, instance);
     xlib_surface_loader.create_xlib_surface(&x11_create_info, None)
 }
 
 #[cfg(target_os = "macos")]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-    entry: &E,
-    instance: &I,
+pub unsafe fn create_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::mem;
     use std::os::raw::c_void;
-    use std::ptr;
     use winit::platform::macos::WindowExtMacOS;
 
     let wnd: cocoa_id = mem::transmute(window.ns_window());
@@ -97,21 +90,17 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
     view.setLayer(mem::transmute(layer.as_ref()));
     view.setWantsLayer(YES);
 
-    let create_info = vk::MacOSSurfaceCreateInfoMVK {
-        s_type: vk::StructureType::MACOS_SURFACE_CREATE_INFO_M,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        p_view: window.ns_view() as *const c_void,
-    };
+    let create_info = vk::MacOSSurfaceCreateInfoMVK::default()
+        .view(window.ns_view() as *const c_void);
 
-    let macos_surface_loader = MacOSSurface::new(entry, instance);
-    macos_surface_loader.create_mac_os_surface_mvk(&create_info, None)
+    let macos_surface_loader = macos_surface::Instance::new(entry, instance);
+    macos_surface_loader.create_mac_os_surface(&create_info, None)
 }
 
 #[cfg(target_os = "windows")]
-pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-    entry: &E,
-    instance: &I,
+pub unsafe fn create_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
     window: &winit::window::Window,
 ) -> Result<vk::SurfaceKHR, vk::Result> {
     use std::os::raw::c_void;
@@ -122,14 +111,10 @@ pub unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
 
     let hwnd = window.hwnd() as HWND;
     let hinstance = GetModuleHandleW(ptr::null()) as *const c_void;
-    let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
-        s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
-        p_next: ptr::null(),
-        flags: Default::default(),
-        hinstance,
-        hwnd: hwnd as *const c_void,
-    };
-    let win32_surface_loader = Win32Surface::new(entry, instance);
+    let win32_create_info = vk::Win32SurfaceCreateInfoKHR::default()
+        .hinstance(hinstance as isize)
+        .hwnd(hwnd as isize);
+    let win32_surface_loader = win32_surface::Instance::new(entry, instance);
     win32_surface_loader.create_win32_surface(&win32_create_info, None)
 }
 // ------------------------------------------------------------------------
