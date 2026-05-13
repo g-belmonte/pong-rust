@@ -1,8 +1,8 @@
 //! Engine-owned application loop.
 //!
 //! [`App::run`] owns the winit event loop, the `GraphicsManager`, the
-//! `Resources` queue, the [`Input`] state, and the [`Time`] accumulator. The
-//! game crate hands it a scene-builder closure
+//! `Resources` queue, the [`Input`] state, the [`Time`] accumulator, and the
+//! `AudioManager`. The game crate hands it a scene-builder closure
 //! (`FnOnce(&mut Resources, &mut GraphicsManager) -> Scene`) and gets to
 //! collapse `main` down to roughly:
 //!
@@ -10,7 +10,7 @@
 //! engine::app::App::new().with_scene(build_scene).run();
 //! ```
 //!
-//! Per-frame flow on `RedrawRequested`:
+//! Per-frame flow on `WindowEvent::RedrawRequested`:
 //!   1. `Time::begin_frame` snapshots the variable delta and folds it into
 //!      the fixed-step accumulator.
 //!   2. While the accumulator has a step available:
@@ -27,12 +27,32 @@
 //!   8. `Scene::collect_transforms` gathers `(handle, matrix)` for the renderer.
 //!   9. `GraphicsManager::draw_frame` submits.
 //!
+//! ## winit 0.30 integration
+//!
+//! winit 0.30 replaced the `EventLoop::run(closure)` shape with the
+//! [`ApplicationHandler`] trait. The renderer + scene cannot be built until
+//! the platform delivers a `resumed` event (on Android/iOS this is when the
+//! surface becomes available; on desktop it fires once at startup). So the
+//! engine state lives behind `Option`s on [`AppState`] and is initialised the
+//! first time `resumed` fires.
+//!
+//! winit 0.30's `run_app` returns `Result<(), EventLoopError>` (no longer
+//! `-> !`), but we keep `App::run() -> !` and call `process::exit` after the
+//! loop returns. Reason: avoids reshaping the documented destructor
+//! workarounds (end-of-init pipeline-cache save; per-frame
+//! `Resources::flush_pending`) in the same PR as the winit bump.
+//!
 //! Winit input events update [`Input`] in place — there is no event-dispatch
 //! surface for game code. `WindowEvent::Focused(false)` triggers
 //! `Input::lose_focus` to avoid stuck-key syndrome after Alt-Tab.
 
-use winit::event::{ElementState, Event as WEvent, KeyboardInput, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use std::process;
+
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::PhysicalKey;
+use winit::window::WindowId;
 
 use crate::audio::AudioManager;
 use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
@@ -60,8 +80,8 @@ impl App {
     }
 
     /// Register the scene-construction closure. Called once after the renderer
-    /// is up, before the event loop starts. The closure may spawn objects
-    /// (deferred — flushed before the first frame).
+    /// is up, before the event loop starts driving frames. The closure may
+    /// spawn objects (deferred — flushed before the first frame).
     pub fn with_scene<F>(mut self, f: F) -> Self
     where
         F: FnOnce(&mut Resources, &mut GraphicsManager) -> Scene + 'static,
@@ -70,106 +90,188 @@ impl App {
         self
     }
 
-    /// Enter the event loop. Diverges: winit 0.20's `EventLoop::run` is `-> !`.
+    /// Enter the event loop. Diverges via `process::exit` after winit returns.
     pub fn run(self) -> ! {
         let builder = self
             .scene_builder
             .expect("App::run requires .with_scene(...)");
 
-        let event_loop = EventLoop::new();
-        let mut graphics_manager = GraphicsManager::new(&event_loop);
+        let event_loop = EventLoop::new().expect("Failed to create event loop");
+        // Poll so the loop runs at the renderer's pace, not at OS event arrival.
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        let mut state = AppState {
+            scene_builder: Some(builder),
+            engine: None,
+            exit_requested: false,
+        };
+
+        if let Err(e) = event_loop.run_app(&mut state) {
+            eprintln!("event loop error: {e}");
+            process::exit(1);
+        }
+        process::exit(0);
+    }
+}
+
+/// Initialised engine state. Constructed on the first `resumed` event.
+struct Engine {
+    graphics_manager: GraphicsManager,
+    resources: Resources,
+    scene: Scene,
+    time: Time,
+    input: Input,
+    audio: AudioManager,
+}
+
+struct AppState {
+    scene_builder: Option<SceneBuilder>,
+    engine: Option<Engine>,
+    exit_requested: bool,
+}
+
+impl ApplicationHandler for AppState {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.engine.is_some() {
+            // Re-resume (e.g. mobile foregrounding). Desktop platforms only
+            // fire this once; no state to rebuild here today.
+            return;
+        }
+        let builder = self
+            .scene_builder
+            .take()
+            .expect("scene builder consumed before first resume");
+
+        let mut graphics_manager = GraphicsManager::new(event_loop);
         let mut resources = Resources::new();
         let mut scene = builder(&mut resources, &mut graphics_manager);
         // Flush build-time spawns so the first frame sees populated objects.
         scene.apply_commands(&mut graphics_manager);
 
-        let mut time = Time::new();
-        let mut input = Input::new();
-        let mut audio = AudioManager::new();
-        let mut exit_requested = false;
+        self.engine = Some(Engine {
+            graphics_manager,
+            resources,
+            scene,
+            time: Time::new(),
+            input: Input::new(),
+            audio: AudioManager::new(),
+        });
+    }
 
-        event_loop.run(move |event, _, control_flow| {
-            if exit_requested {
-                graphics_manager.device_wait_idle();
-                *control_flow = ControlFlow::Exit;
-                return;
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+
+        if self.exit_requested {
+            engine.graphics_manager.device_wait_idle();
+            event_loop.exit();
+            return;
+        }
+
+        match event {
+            WindowEvent::CloseRequested => {
+                engine.graphics_manager.device_wait_idle();
+                event_loop.exit();
             }
-            match event {
-                WEvent::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => {
-                        graphics_manager.device_wait_idle();
-                        *control_flow = ControlFlow::Exit;
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                // Engine input maps to *physical* keys so layouts (AZERTY,
+                // Dvorak) don't shift WASD/IJKL. `PhysicalKey::Unidentified`
+                // is dropped — no game cares about unknown scancodes.
+                if let PhysicalKey::Code(code) = key_event.physical_key {
+                    // winit 0.30 surfaces an explicit `repeat` flag; the
+                    // engine's `Input` already filters repeats by tracking
+                    // pressed state, but the explicit short-circuit avoids
+                    // the HashSet roundtrip.
+                    if key_event.repeat {
+                        return;
                     }
-                    WindowEvent::KeyboardInput { input: kb, .. } => {
-                        let KeyboardInput { virtual_keycode, state, .. } = kb;
-                        if let Some(kc) = virtual_keycode {
-                            match state {
-                                ElementState::Pressed => input.on_key_pressed(kc),
-                                ElementState::Released => input.on_key_released(kc),
-                            }
-                        }
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        input.on_mouse_moved(position.x as f32, position.y as f32);
-                    }
-                    WindowEvent::MouseInput { state, button, .. } => match state {
-                        ElementState::Pressed => input.on_mouse_pressed(button),
-                        ElementState::Released => input.on_mouse_released(button),
-                    },
-                    WindowEvent::Focused(false) => input.lose_focus(),
-                    _ => {}
-                },
-                WEvent::MainEventsCleared => {
-                    graphics_manager.window_request_redraw();
-                }
-                WEvent::RedrawRequested(_) => {
-                    time.begin_frame();
-
-                    // Drain accumulator: deterministic physics ticks.
-                    time.set_phase_fixed();
-                    while time.consume_fixed_step() {
-                        scene.dispatch_fixed_update(
-                            &time,
-                            &input,
-                            &mut resources,
-                            &mut graphics_manager,
-                            &mut audio,
-                            &mut exit_requested,
-                        );
-                        scene.apply_commands(&mut graphics_manager);
-                    }
-
-                    // Variable-rate update: rendering-bound work + edge input.
-                    time.set_phase_variable();
-                    scene.dispatch_update(
-                        &time,
-                        &input,
-                        &mut resources,
-                        &mut graphics_manager,
-                        &mut audio,
-                        &mut exit_requested,
-                    );
-                    scene.apply_commands(&mut graphics_manager);
-
-                    // Clear edge state *after* both dispatches so every
-                    // fixed_update and the update of one frame see the same
-                    // `was_just_pressed` / `was_just_released` set.
-                    input.end_frame();
-
-                    // Resource RAII flush must happen between frames — see
-                    // resources.rs for why we don't do it in Drop.
-                    resources.flush_pending(&mut graphics_manager);
-                    graphics_manager.set_camera(&scene.camera);
-                    let transforms = scene.collect_transforms();
-                    graphics_manager.draw_frame(&transforms);
-
-                    if IS_PAINT_FPS_COUNTER {
-                        print!("FPS: {}\r", time.fps());
+                    match key_event.state {
+                        ElementState::Pressed => engine.input.on_key_pressed(code),
+                        ElementState::Released => engine.input.on_key_released(code),
                     }
                 }
-                WEvent::LoopDestroyed => graphics_manager.device_wait_idle(),
-                _ => (),
             }
-        })
+            WindowEvent::CursorMoved { position, .. } => {
+                engine
+                    .input
+                    .on_mouse_moved(position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput { state, button, .. } => match state {
+                ElementState::Pressed => engine.input.on_mouse_pressed(button),
+                ElementState::Released => engine.input.on_mouse_released(button),
+            },
+            WindowEvent::Focused(false) => engine.input.lose_focus(),
+            WindowEvent::RedrawRequested => {
+                redraw(engine, &mut self.exit_requested);
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // winit 0.30 replaced `MainEventsCleared` with this hook. Request a
+        // redraw each turn through the loop to drive the render at vsync /
+        // mailbox cadence.
+        if let Some(engine) = self.engine.as_mut() {
+            engine.graphics_manager.window_request_redraw();
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(engine) = self.engine.as_mut() {
+            engine.graphics_manager.device_wait_idle();
+        }
+    }
+}
+
+fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
+    engine.time.begin_frame();
+
+    // Drain accumulator: deterministic physics ticks.
+    engine.time.set_phase_fixed();
+    while engine.time.consume_fixed_step() {
+        engine.scene.dispatch_fixed_update(
+            &engine.time,
+            &engine.input,
+            &mut engine.resources,
+            &mut engine.graphics_manager,
+            &mut engine.audio,
+            exit_requested,
+        );
+        engine.scene.apply_commands(&mut engine.graphics_manager);
+    }
+
+    // Variable-rate update: rendering-bound work + edge input.
+    engine.time.set_phase_variable();
+    engine.scene.dispatch_update(
+        &engine.time,
+        &engine.input,
+        &mut engine.resources,
+        &mut engine.graphics_manager,
+        &mut engine.audio,
+        exit_requested,
+    );
+    engine.scene.apply_commands(&mut engine.graphics_manager);
+
+    // Clear edge state *after* both dispatches so every fixed_update and the
+    // update of one frame see the same `was_just_pressed` / `was_just_released`
+    // set.
+    engine.input.end_frame();
+
+    // Resource RAII flush must happen between frames — see resources.rs for
+    // why we don't do it in Drop.
+    engine.resources.flush_pending(&mut engine.graphics_manager);
+    engine.graphics_manager.set_camera(&engine.scene.camera);
+    let transforms = engine.scene.collect_transforms();
+    engine.graphics_manager.draw_frame(&transforms);
+
+    if IS_PAINT_FPS_COUNTER {
+        print!("FPS: {}\r", engine.time.fps());
     }
 }

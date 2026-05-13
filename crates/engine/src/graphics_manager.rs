@@ -1,6 +1,5 @@
 pub mod constants;
 pub mod debug;
-pub mod platforms;
 pub mod share;
 pub mod structures;
 pub mod tools;
@@ -219,12 +218,13 @@ pub struct GraphicsManager {
 }
 
 impl GraphicsManager {
-    pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> GraphicsManager {
+    pub fn new(event_loop: &winit::event_loop::ActiveEventLoop) -> GraphicsManager {
         let window = window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = unsafe { ash::Entry::load().expect("Failed to load Vulkan library") };
         let instance = share::create_instance(
             &entry,
+            &window,
             WINDOW_TITLE,
             VALIDATION.is_enable,
             &VALIDATION.required_validation_layers,

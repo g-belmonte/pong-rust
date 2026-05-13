@@ -4,22 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-winit     = "0.20.0"
-ash       = "0.38"
-glam      = "0.32"
-memoffset = "0.5.1"
-image     = { version = "0.23", default-features = false, features = ["png"] }
-num       = "0.2"
-dirs      = "5"
-kira      = { version = "0.12", default-features = false, features = ["cpal", "mp3"] }
+winit             = "0.30"
+ash               = "0.38"
+ash-window        = "0.13"
+raw-window-handle = "0.6"
+glam              = "0.32"
+memoffset         = "0.5.1"
+image             = { version = "0.23", default-features = false, features = ["png"] }
+num               = "0.2"
+dirs              = "5"
+kira              = { version = "0.12", default-features = false, features = ["cpal", "mp3"] }
 
 [dependencies.bitflags]
 version = ">= 1.0.4"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.17.0"
-cocoa = "0.18.4"
-objc  = "0.2.5"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-winapi = { version = "0.3.5", features = ["windef", "libloaderapi"] }

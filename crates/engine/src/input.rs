@@ -25,7 +25,8 @@
 
 use std::collections::HashSet;
 
-pub use winit::event::{MouseButton, VirtualKeyCode as KeyCode};
+pub use winit::event::MouseButton;
+pub use winit::keyboard::KeyCode;
 
 #[derive(Default)]
 pub struct Input {

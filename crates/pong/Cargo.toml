@@ -5,7 +5,6 @@ edition = "2018"
 
 [dependencies]
 engine  = { path = "../engine" }
-winit   = "0.20.0"
 num     = "0.2"
 rand    = "0.8.5"
 fontdue = "0.7"

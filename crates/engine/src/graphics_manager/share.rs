@@ -1,4 +1,5 @@
 use ash::vk;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use std::ffi::CString;
 use std::os::raw::c_void;
@@ -6,8 +7,32 @@ use std::ptr;
 
 use crate::graphics_manager::constants::*;
 use crate::graphics_manager::debug;
-use crate::graphics_manager::platforms;
 use crate::graphics_manager::structures::*;
+
+/// Vulkan instance extensions required to present to a window on the current
+/// platform (e.g. `VK_KHR_surface` + `VK_KHR_xlib_surface` on Linux/X11).
+/// Delegates to `ash-window`, plus `VK_EXT_debug_utils` for the validation
+/// layer's messenger.
+fn required_extension_names(window: &winit::window::Window) -> Vec<*const i8> {
+    let display = window.display_handle().expect("display handle");
+    let mut names: Vec<*const i8> = ash_window::enumerate_required_extensions(display.as_raw())
+        .expect("ash_window::enumerate_required_extensions failed")
+        .to_vec();
+    names.push(ash::ext::debug_utils::NAME.as_ptr());
+    names
+}
+
+/// Create a `VkSurfaceKHR` for the given window. `ash-window` picks the right
+/// `VK_KHR_*_surface` extension based on the window's handle variant.
+unsafe fn create_raw_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
+    window: &winit::window::Window,
+) -> Result<vk::SurfaceKHR, vk::Result> {
+    let display = window.display_handle().expect("display handle");
+    let window_handle = window.window_handle().expect("window handle");
+    ash_window::create_surface(entry, instance, display.as_raw(), window_handle.as_raw(), None)
+}
 
 // Both pipelines now use the same vertex+instance pattern. Each pipeline
 // has one shared mesh per call-site (solid: one per registered MeshHandle;
@@ -47,6 +72,7 @@ pub struct TexturedDraw {
 
 pub fn create_instance(
     entry: &ash::Entry,
+    window: &winit::window::Window,
     window_title: &str,
     is_enable_debug: bool,
     required_validation_layers: &[&str],
@@ -73,7 +99,7 @@ pub fn create_instance(
     let debug_utils_create_info = debug::populate_debug_messenger_create_info();
 
     // VK_EXT debug report has been requested here.
-    let extension_names = platforms::required_extension_names();
+    let extension_names = required_extension_names(window);
 
     let requred_validation_layer_raw_names: Vec<CString> = required_validation_layers
         .iter()
@@ -123,7 +149,7 @@ pub fn create_surface(
     window: &winit::window::Window,
 ) -> SurfaceStuff {
     let surface = unsafe {
-        platforms::create_surface(entry, instance, window).expect("Failed to create surface.")
+        create_raw_surface(entry, instance, window).expect("Failed to create surface.")
     };
     let surface_loader = ash::khr::surface::Instance::new(entry, instance);
 
