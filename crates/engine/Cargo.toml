@@ -3,6 +3,12 @@ name = "engine"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Watch `crates/engine/shaders/spv/` and rebuild built-in material pipelines
+# when the SPV bytes change on disk. Dev iteration only; off in release.
+hot-reload = ["dep:notify"]
+
 [dependencies]
 winit             = "0.30"
 ash               = "0.38"
@@ -14,6 +20,7 @@ image             = { version = "0.23", default-features = false, features = ["p
 num               = "0.2"
 dirs              = "5"
 kira              = { version = "0.12", default-features = false, features = ["cpal", "mp3"] }
+notify            = { version = "6", optional = true }
 
 [dependencies.bitflags]
 version = ">= 1.0.4"

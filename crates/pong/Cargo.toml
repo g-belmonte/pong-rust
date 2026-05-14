@@ -3,6 +3,13 @@ name = "pong"
 version = "0.1.0"
 edition = "2018"
 
+[features]
+default = []
+# Proxy feature: turning this on enables shader hot-reload in the engine. Run
+# `cargo run -p pong --features hot-reload` during dev iteration on the
+# engine's built-in shaders.
+hot-reload = ["engine/hot-reload"]
+
 [dependencies]
 engine  = { path = "../engine" }
 num     = "0.2"

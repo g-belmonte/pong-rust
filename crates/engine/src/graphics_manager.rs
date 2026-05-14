@@ -1,5 +1,7 @@
 pub mod constants;
 pub mod debug;
+#[cfg(feature = "hot-reload")]
+pub mod hot_reload;
 pub mod material;
 pub mod share;
 pub mod structures;
@@ -186,6 +188,10 @@ pub struct GraphicsManager {
     current_frame: usize,
 
     is_framebuffer_resized: bool,
+
+    // ----- Shader hot-reload (dev only) -----
+    #[cfg(feature = "hot-reload")]
+    hot_reload: Option<hot_reload::HotReload>,
 }
 
 impl GraphicsManager {
@@ -347,6 +353,9 @@ impl GraphicsManager {
             current_frame: 0,
 
             is_framebuffer_resized: false,
+
+            #[cfg(feature = "hot-reload")]
+            hot_reload: hot_reload::HotReload::try_new(&hot_reload::engine_spv_dir()),
         };
 
         // Built-in materials. Order matters: the solid material is registered
@@ -374,6 +383,26 @@ impl GraphicsManager {
             bindings: &[Binding::CameraUbo, Binding::Sampler2d],
         });
         gm.textured_material_handle = textured_handle;
+
+        // Register the built-in shader paths with the hot-reload watcher so
+        // edits → `compile-shaders.sh` → SPV bytes on disk → pipeline rebuild
+        // round-trip without restarting the binary.
+        #[cfg(feature = "hot-reload")]
+        if let Some(hr) = &mut gm.hot_reload {
+            let dir = hot_reload::engine_spv_dir();
+            hr.register(&dir.join("main.vert.spv"), solid_handle, hot_reload::ShaderStage::Vertex);
+            hr.register(&dir.join("main.frag.spv"), solid_handle, hot_reload::ShaderStage::Fragment);
+            hr.register(
+                &dir.join("textured.vert.spv"),
+                textured_handle,
+                hot_reload::ShaderStage::Vertex,
+            );
+            hr.register(
+                &dir.join("textured.frag.spv"),
+                textured_handle,
+                hot_reload::ShaderStage::Fragment,
+            );
+        }
 
         // Persist the cache now: pipeline creation above is what populates it
         // (compiling shaders on a cold start, or filling in any state combos
@@ -774,6 +803,9 @@ impl GraphicsManager {
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Mat4)]) {
+        #[cfg(feature = "hot-reload")]
+        self.process_hot_reloads();
+
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
@@ -1241,6 +1273,93 @@ fn record_material_command_buffer(
         device
             .end_command_buffer(command_buffer)
             .expect("Failed to record Command Buffer at Ending!");
+    }
+}
+
+#[cfg(feature = "hot-reload")]
+impl GraphicsManager {
+    /// Drain the hot-reload watcher and rebuild any built-in material pipeline
+    /// whose SPV bytes changed on disk. Called from `draw_frame` once per
+    /// frame. Errors (missing file, IO error, Vulkan pipeline-creation
+    /// failure) are logged to stderr and leave the old pipeline running.
+    fn process_hot_reloads(&mut self) {
+        let Some(hr) = self.hot_reload.as_mut() else {
+            return;
+        };
+        let changes = hr.drain();
+        if changes.is_empty() {
+            return;
+        }
+        for (handle, stage, path) in changes {
+            let new_bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("hot-reload: read {} failed: {e}", path.display());
+                    continue;
+                }
+            };
+            let Some(mat) = self.materials.get_mut(&handle) else {
+                continue;
+            };
+            // Stash old SPV so we can roll back on Vulkan failure.
+            let backup = match stage {
+                hot_reload::ShaderStage::Vertex => {
+                    std::mem::replace(&mut mat.vertex_spv, new_bytes)
+                }
+                hot_reload::ShaderStage::Fragment => {
+                    std::mem::replace(&mut mat.fragment_spv, new_bytes)
+                }
+            };
+            // Build new pipeline against the same descriptor-set layout and
+            // current swapchain extent. `material::create_pipeline` is the
+            // same code path `recreate_swapchain` uses.
+            //
+            // Wait for the GPU to be idle before destroying the old pipeline:
+            // a frame already in flight may still be bound to it.
+            unsafe {
+                self.device
+                    .device_wait_idle()
+                    .expect("device_wait_idle failed in process_hot_reloads");
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                create_material_pipeline(
+                    &self.device,
+                    self.render_pass,
+                    self.swapchain_extent,
+                    mat.descriptor_set_layout,
+                    self.pipeline_cache,
+                    &mat.vertex_spv,
+                    &mat.fragment_spv,
+                    &mat.vertex_attrs,
+                    &mat.instance_attrs,
+                )
+            }));
+            match result {
+                Ok((pipeline, pipeline_layout, _vs, _is)) => {
+                    unsafe {
+                        self.device.destroy_pipeline(mat.pipeline, None);
+                        self.device
+                            .destroy_pipeline_layout(mat.pipeline_layout, None);
+                    }
+                    mat.pipeline = pipeline;
+                    mat.pipeline_layout = pipeline_layout;
+                    eprintln!("hot-reload: reloaded {}", path.display());
+                }
+                Err(_) => {
+                    // Pipeline creation panicked (e.g. bad SPV header). Roll
+                    // back the SPV bytes so the next save can be detected as
+                    // a real change.
+                    match stage {
+                        hot_reload::ShaderStage::Vertex => mat.vertex_spv = backup,
+                        hot_reload::ShaderStage::Fragment => mat.fragment_spv = backup,
+                    }
+                    eprintln!(
+                        "hot-reload: pipeline rebuild failed for {} — kept old pipeline",
+                        path.display()
+                    );
+                }
+            }
+        }
     }
 }
 
