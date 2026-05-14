@@ -16,7 +16,9 @@ use std::rc::Rc;
 
 use crate::audio::Sound;
 use crate::graphics_manager::structures::ModelMesh;
-use crate::graphics_manager::{GraphicsManager, MeshHandle, TextureHandle};
+use crate::graphics_manager::{
+    GraphicsManager, MaterialDesc, MaterialHandle, MeshHandle, TextureHandle,
+};
 
 struct PendingDestroys {
     meshes: Vec<MeshHandle>,
@@ -77,6 +79,24 @@ impl Resources {
             handle,
             pending: Rc::clone(&self.pending),
         }
+    }
+
+    /// Register a custom material (vertex+fragment shaders + vertex/instance
+    /// layout + descriptor bindings) with the renderer and return its handle.
+    ///
+    /// Unlike [`Mesh`] / [`Texture`], materials are not deferred-destroy RAII
+    /// today: the returned [`MaterialHandle`] is a plain `Copy` id with no
+    /// `Drop`. The renderer owns the material's pipeline + descriptor-set
+    /// layout + per-frame instance buffers for the rest of its lifetime.
+    /// (Material destruction can be added when a game needs it — e.g. for a
+    /// debug shader-reload PR — and would slot into `PendingDestroys` next to
+    /// meshes and textures.)
+    pub fn load_material(
+        &self,
+        gm: &mut GraphicsManager,
+        desc: &MaterialDesc,
+    ) -> MaterialHandle {
+        gm.register_material(desc)
     }
 
     /// Decode `bytes` (any container `kira` supports — mp3 in the default

@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod debug;
+pub mod material;
 pub mod share;
 pub mod structures;
 pub mod tools;
@@ -16,15 +17,17 @@ use ash::vk;
 use std::collections::HashMap;
 use std::ptr;
 
-use self::structures::{
-    Instance, ModelMesh, TexturedInstance, TexturedVertex, UniformBufferObject,
+pub use self::material::{Binding, MaterialDesc, MaterialHandle, VertexAttr};
+use self::material::{
+    allocate_camera_descriptor_sets, allocate_textured_descriptor_sets,
+    create_descriptor_set_layout as create_material_descriptor_set_layout,
+    create_pipeline as create_material_pipeline, Material, MAX_INSTANCES_PER_MATERIAL,
 };
+use self::structures::{ModelMesh, TexturedVertex, UniformBufferObject};
 
 // Two distinct handle types: MeshHandle identifies a piece of geometry that
 // can be reused across many instances; ModelHandle identifies a single
-// drawable (an instance of a mesh, or a textured model). Solid-colour
-// rendering goes through the mesh+instance path; textured models stay
-// per-model because each owns its own descriptor set.
+// drawable instance (of any material — solid or textured).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct MeshHandle(u32);
 
@@ -39,10 +42,6 @@ pub struct TextureResources {
     memory: vk::DeviceMemory,
     view: vk::ImageView,
     sampler: vk::Sampler,
-    // One descriptor set per swapchain image (camera UBO[i] + this texture's
-    // view+sampler). Shared across every textured instance that uses this
-    // texture — that's the whole point of the textured-instance refactor.
-    descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 struct MeshBuffers {
@@ -53,16 +52,18 @@ struct MeshBuffers {
     index_count: u32,
 }
 
-struct InstanceData {
-    mesh: MeshHandle,
-    color: [f32; 3],
-    last_model: Mat4,
-}
-
-struct TexturedInstanceData {
-    texture: TextureHandle,
-    uv_offset: [f32; 2],
-    uv_scale: [f32; 2],
+/// One registered drawable instance. `material` selects the pipeline and
+/// layout; `mesh` is populated for non-sampler materials (each instance brings
+/// its own geometry); `texture` is populated for sampler materials (the
+/// renderer batches instances by texture and draws against the engine's shared
+/// unit quad). `extra` holds the per-instance bytes after the model matrix —
+/// e.g. `[f32; 3]` colour for the solid material, `[f32; 2] + [f32; 2]` UV
+/// rect for the textured material.
+struct MaterialInstanceData {
+    material: MaterialHandle,
+    mesh: Option<MeshHandle>,
+    texture: Option<TextureHandle>,
+    extra: Vec<u8>,
     last_model: Mat4,
 }
 
@@ -75,16 +76,8 @@ fn destroy_mesh(device: &ash::Device, mesh: &MeshBuffers) {
     }
 }
 
-fn destroy_texture_resources(
-    device: &ash::Device,
-    descriptor_pool: vk::DescriptorPool,
-    tex: &TextureResources,
-) {
+fn destroy_texture_resources(device: &ash::Device, tex: &TextureResources) {
     unsafe {
-        // Pool was created with FREE_DESCRIPTOR_SET so this is legal.
-        if !tex.descriptor_sets.is_empty() {
-            let _ = device.free_descriptor_sets(descriptor_pool, &tex.descriptor_sets);
-        }
         device.destroy_sampler(tex.sampler, None);
         device.destroy_image_view(tex.view, None);
         device.destroy_image(tex.image, None);
@@ -110,6 +103,10 @@ fn write_camera_ubos(
         }
     }
 }
+
+/// Cap on simultaneously-registered materials. Bounds the descriptor pool
+/// sizing in [`share::create_descriptor_pool`].
+pub const MAX_MATERIALS: usize = 16;
 
 /// Field groups below mark which state survives `recreate_swapchain` and
 /// which is rebuilt. Changing this layout means revisiting that method.
@@ -140,64 +137,40 @@ pub struct GraphicsManager {
     swapchain_imageviews: Vec<vk::ImageView>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
 
-    // ----- Pipelines + render pass (rebuilt on swapchain recreation) -----
+    // ----- Render pass (survives recreation unless swapchain format changes) -----
     render_pass: vk::RenderPass,
-    ubo_layout: vk::DescriptorSetLayout,
-    pipeline_layout: vk::PipelineLayout,
-    graphics_pipeline: vk::Pipeline,
-    // Second pipeline for textured (sampled image) draws. Coexists with the
-    // solid-colour pipeline in the same render pass.
-    textured_ubo_layout: vk::DescriptorSetLayout,
-    textured_pipeline_layout: vk::PipelineLayout,
-    textured_pipeline: vk::Pipeline,
-    // Persistent across runs: loaded from / saved to disk so the driver can
-    // skip shader compilation on subsequent launches.
     pipeline_cache: vk::PipelineCache,
 
-    // ----- Camera UBO + descriptor pool/sets (survive swapchain recreation) -----
-    // Camera UBO `(view, proj)` is shared across all models — one buffer per
-    // swapchain image, one descriptor set per swapchain image. `set_camera`
-    // compares against `last_camera_view` / `last_camera_proj` and only writes
-    // the UBOs when the matrices actually change (which is rare today — Pong's
-    // camera is static, so the cache hits every frame after the first).
+    // ----- Material registry -----
+    materials: HashMap<MaterialHandle, Material>,
+    next_material_handle: u32,
+    /// Built-in solid-colour material (vertex pos, instance = mat4 model +
+    /// vec3 color, bindings = [CameraUbo]). Registered in `new`.
+    solid_material_handle: MaterialHandle,
+    /// Built-in textured material (vertex pos = unit quad, instance = mat4
+    /// model + vec2 uv_offset + vec2 uv_scale, bindings = [CameraUbo,
+    /// Sampler2d]). Registered in `new`.
+    textured_material_handle: MaterialHandle,
+
+    // ----- Camera UBO + descriptor pool (survive swapchain recreation) -----
     camera_uniform_buffers: Vec<vk::Buffer>,
     camera_uniform_buffers_memory: Vec<vk::DeviceMemory>,
     descriptor_pool: vk::DescriptorPool,
-    camera_descriptor_sets: Vec<vk::DescriptorSet>,
-    // Cached matrices last pushed to the camera UBOs. `None` until the first
-    // `set_camera` call. A change forces `device_wait_idle` + a write to every
-    // per-swapchain-image UBO, so per-frame mutation pays a synchronisation
-    // cost — fine for today's static-camera games; worth revisiting if a game
-    // moves the camera every frame.
     last_camera_view: Option<Mat4>,
     last_camera_proj: Option<Mat4>,
 
     // ----- Registered geometry, instances, and textures (survive recreation) -----
     meshes: HashMap<MeshHandle, MeshBuffers>,
     next_mesh_handle: u32,
-    instances: HashMap<ModelHandle, InstanceData>,
-    textured_instances: HashMap<ModelHandle, TexturedInstanceData>,
+    instances: HashMap<ModelHandle, MaterialInstanceData>,
     next_handle: u32,
-    // Texture lifetime is independent of model lifetime — multiple textured
-    // models may share one texture (e.g. a font atlas with one glyph per quad).
     textures: HashMap<TextureHandle, TextureResources>,
     next_texture_handle: u32,
 
-    // ----- Per-frame instance buffers (survive recreation) -----
-    // Per-frame solid-colour instance buffer (host-visible + coherent). Layout
-    // each frame is "all instances of mesh A, then all of mesh B, ..." so each
-    // per-mesh instanced draw can bind it at the right offset.
-    instance_buffers: Vec<vk::Buffer>,
-    instance_buffer_memories: Vec<vk::DeviceMemory>,
-    // Per-frame textured instance buffer, same pattern but for the textured
-    // pipeline. Layout each frame is "all instances of texture A, then B, ...".
-    textured_instance_buffers: Vec<vk::Buffer>,
-    textured_instance_buffer_memories: Vec<vk::DeviceMemory>,
-
-    // ----- Shared unit quad for textured instances (survives recreation) -----
-    // Built once at construction. The vertex shader maps pos `[-0.5..0.5]^2`
-    // to UV via the per-instance uv_offset/uv_scale, so any sprite size and
-    // any UV rect is supported.
+    // ----- Shared unit quad for textured (sampler-material) instances -----
+    // Built once at construction. The textured vertex shader maps pos
+    // `[-0.5..0.5]^2` to UV via the per-instance uv_offset/uv_scale, so any
+    // sprite size and any UV rect is supported.
     textured_quad_vertex_buffer: vk::Buffer,
     textured_quad_vertex_memory: vk::DeviceMemory,
     textured_quad_index_buffer: vk::Buffer,
@@ -206,8 +179,6 @@ pub struct GraphicsManager {
 
     // ----- Command buffers + sync (survive recreation) -----
     command_pool: vk::CommandPool,
-    // MAX_FRAMES_IN_FLIGHT command buffers, indexed by current_frame. Re-recorded
-    // each frame in draw_frame so per-instance/per-draw matrices reflect Scene state.
     command_buffers: Vec<vk::CommandBuffer>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
@@ -261,29 +232,7 @@ impl GraphicsManager {
             &swapchain_stuff.swapchain_images,
         );
         let render_pass = share::create_render_pass(&device, swapchain_stuff.swapchain_format);
-        let ubo_layout = share::create_descriptor_set_layout(&device);
-        let textured_ubo_layout = share::create_textured_descriptor_set_layout(&device);
         let pipeline_cache = create_pipeline_cache(&device);
-        let (graphics_pipeline, pipeline_layout) = share::create_graphics_pipeline(
-            &device,
-            render_pass,
-            swapchain_stuff.swapchain_extent,
-            ubo_layout,
-            pipeline_cache,
-        );
-        let (textured_pipeline, textured_pipeline_layout) = share::create_textured_graphics_pipeline(
-            &device,
-            render_pass,
-            swapchain_stuff.swapchain_extent,
-            textured_ubo_layout,
-            pipeline_cache,
-        );
-        // Persist the cache now: pipeline creation above is what populates it
-        // (compiling shaders on a cold start, or filling in any state combos
-        // missing on a warm start). winit 0.20's `EventLoop::run` is `-> !` and
-        // skips destructors, so `Drop` is not a reliable place to save —
-        // writing here guarantees the disk copy is up to date for next launch.
-        save_pipeline_cache(&device, pipeline_cache);
         let swapchain_framebuffers = share::create_framebuffers(
             &device,
             render_pass,
@@ -292,42 +241,21 @@ impl GraphicsManager {
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
 
-        // Camera lives on `Scene::camera`. The renderer holds the UBOs but
-        // doesn't own the matrices — game code mutates the camera and the
-        // App threads it in via `set_camera` before each `draw_frame`. UBOs
-        // start zero-initialised; the first `set_camera` writes them before
-        // the first draw.
         let swapchain_image_count = swapchain_stuff.swapchain_images.len();
         let (camera_uniform_buffers, camera_uniform_buffers_memory) = share::create_uniform_buffers(
             &device,
             &physical_device_memory_properties,
             swapchain_image_count,
         );
-        let descriptor_pool =
-            share::create_descriptor_pool(&device, swapchain_image_count, MAX_TEXTURED_MODELS);
-        let camera_descriptor_sets = share::create_descriptor_sets(
+        let descriptor_pool = share::create_descriptor_pool(
             &device,
-            descriptor_pool,
-            ubo_layout,
-            &camera_uniform_buffers,
             swapchain_image_count,
+            MAX_MATERIALS,
+            MAX_TEXTURED_MODELS,
         );
 
-        let (instance_buffers, instance_buffer_memories) = create_instance_buffers(
-            &device,
-            &physical_device_memory_properties,
-            MAX_FRAMES_IN_FLIGHT,
-        );
-
-        let (textured_instance_buffers, textured_instance_buffer_memories) =
-            create_textured_instance_buffers(
-                &device,
-                &physical_device_memory_properties,
-                MAX_FRAMES_IN_FLIGHT,
-            );
-
-        // Shared unit-quad VBO/IBO. Front-facing winding matches the solid-colour
-        // quads (TRIANGLE_LIST, CW: 0,1,2 / 2,3,0).
+        // Shared unit-quad VBO/IBO. Used by every sampler-using material's
+        // instances; non-sampler materials bring their own meshes.
         let unit_quad_vertices: [TexturedVertex; 4] = [
             TexturedVertex { pos: [-0.5, -0.5] },
             TexturedVertex { pos: [ 0.5, -0.5] },
@@ -357,7 +285,7 @@ impl GraphicsManager {
         let sync_ojbects =
             share::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT, swapchain_image_count);
 
-        GraphicsManager {
+        let mut gm = GraphicsManager {
             window,
 
             _entry: entry,
@@ -383,29 +311,23 @@ impl GraphicsManager {
             swapchain_imageviews,
             swapchain_framebuffers,
 
-            pipeline_layout,
             render_pass,
-            graphics_pipeline,
-            ubo_layout,
-            textured_ubo_layout,
-            textured_pipeline_layout,
-            textured_pipeline,
             pipeline_cache,
+
+            materials: HashMap::new(),
+            next_material_handle: 0,
+            // Filled in immediately below; sentinel values until register_material runs.
+            solid_material_handle: MaterialHandle(0),
+            textured_material_handle: MaterialHandle(0),
 
             camera_uniform_buffers,
             camera_uniform_buffers_memory,
             descriptor_pool,
-            camera_descriptor_sets,
 
             meshes: HashMap::new(),
             next_mesh_handle: 0,
             instances: HashMap::new(),
-            textured_instances: HashMap::new(),
             next_handle: 0,
-            instance_buffers,
-            instance_buffer_memories,
-            textured_instance_buffers,
-            textured_instance_buffer_memories,
             textured_quad_vertex_buffer,
             textured_quad_vertex_memory,
             textured_quad_index_buffer,
@@ -425,7 +347,43 @@ impl GraphicsManager {
             current_frame: 0,
 
             is_framebuffer_resized: false,
-        }
+        };
+
+        // Built-in materials. Order matters: the solid material is registered
+        // first so its draws occur before textured ones in `draw_frame` —
+        // important because the render pass has no depth attachment and the
+        // pipelines don't blend, so command order is paint order.
+        let solid_handle = gm.register_material(&MaterialDesc {
+            vertex_spv: include_bytes!("../shaders/spv/main.vert.spv"),
+            fragment_spv: include_bytes!("../shaders/spv/main.frag.spv"),
+            vertex_attrs: &[VertexAttr::F32x2],
+            instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
+            bindings: &[Binding::CameraUbo],
+        });
+        gm.solid_material_handle = solid_handle;
+
+        let textured_handle = gm.register_material(&MaterialDesc {
+            vertex_spv: include_bytes!("../shaders/spv/textured.vert.spv"),
+            fragment_spv: include_bytes!("../shaders/spv/textured.frag.spv"),
+            vertex_attrs: &[VertexAttr::F32x2],
+            instance_attrs: &[
+                VertexAttr::Mat4,
+                VertexAttr::F32x2,
+                VertexAttr::F32x2,
+            ],
+            bindings: &[Binding::CameraUbo, Binding::Sampler2d],
+        });
+        gm.textured_material_handle = textured_handle;
+
+        // Persist the cache now: pipeline creation above is what populates it
+        // (compiling shaders on a cold start, or filling in any state combos
+        // missing on a warm start). The engine bridges winit 0.30's
+        // `Result`-returning `run_app` via `process::exit` to keep `App::run() -> !`,
+        // so `Drop` is not a reliable place to save — writing here guarantees
+        // the disk copy is up to date for next launch.
+        save_pipeline_cache(&gm.device, gm.pipeline_cache);
+
+        gm
     }
 
     pub fn window_request_redraw(&mut self) {
@@ -438,6 +396,113 @@ impl GraphicsManager {
                 .device_wait_idle()
                 .expect("Failed to wait device idle!")
         };
+    }
+
+    /// Built-in solid-colour material handle. Per-instance extra payload is
+    /// `[f32; 3]` (the colour).
+    pub fn solid_material(&self) -> MaterialHandle {
+        self.solid_material_handle
+    }
+
+    /// Built-in textured material handle. Per-instance extra payload is
+    /// `[f32; 2] uv_offset` followed by `[f32; 2] uv_scale` (16 bytes total).
+    pub fn textured_material(&self) -> MaterialHandle {
+        self.textured_material_handle
+    }
+
+    /// Register a new material. The renderer copies the SPIR-V bytes and the
+    /// attribute / binding lists; the caller's references are no longer needed
+    /// after the call returns.
+    ///
+    /// The first instance attribute **must** be [`VertexAttr::Mat4`] — the
+    /// engine writes the per-instance model matrix at that offset. Anything
+    /// after it is material-defined and is supplied as raw bytes through
+    /// [`Self::register_material_instance`].
+    pub fn register_material(&mut self, desc: &MaterialDesc) -> MaterialHandle {
+        assert!(
+            !desc.instance_attrs.is_empty()
+                && matches!(desc.instance_attrs[0], VertexAttr::Mat4),
+            "register_material: first instance attribute must be VertexAttr::Mat4 (the model matrix)"
+        );
+        assert!(
+            self.materials.len() < MAX_MATERIALS,
+            "register_material: hit MAX_MATERIALS cap (bump in graphics_manager::MAX_MATERIALS)"
+        );
+
+        let handle = MaterialHandle(self.next_material_handle);
+        self.next_material_handle += 1;
+
+        let descriptor_set_layout =
+            create_material_descriptor_set_layout(&self.device, desc.bindings);
+        let (pipeline, pipeline_layout, vertex_stride, instance_stride) = create_material_pipeline(
+            &self.device,
+            self.render_pass,
+            self.swapchain_extent,
+            descriptor_set_layout,
+            self.pipeline_cache,
+            desc.vertex_spv,
+            desc.fragment_spv,
+            desc.vertex_attrs,
+            desc.instance_attrs,
+        );
+        // Per-instance buffer: host-visible+coherent, rewritten each frame.
+        let buffer_size =
+            (MAX_INSTANCES_PER_MATERIAL * instance_stride as usize) as vk::DeviceSize;
+        let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut instance_buffer_memories = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..MAX_FRAMES_IN_FLIGHT {
+            let (buffer, memory) = share::create_buffer(
+                &self.device,
+                buffer_size,
+                vk::BufferUsageFlags::VERTEX_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                &self.physical_device_memory_properties,
+            );
+            instance_buffers.push(buffer);
+            instance_buffer_memories.push(memory);
+        }
+
+        let has_sampler = Material::has_sampler_binding(desc.bindings);
+        // Pre-allocate camera-only descriptor sets for non-sampler materials
+        // (the textured-batch materials get per-(material, texture) sets on
+        // demand when a textured instance is first registered).
+        let camera_descriptor_sets = if has_sampler {
+            Vec::new()
+        } else {
+            allocate_camera_descriptor_sets(
+                &self.device,
+                self.descriptor_pool,
+                descriptor_set_layout,
+                &self.camera_uniform_buffers,
+            )
+        };
+
+        // Mat4 is always first in the instance stream (64 bytes); anything
+        // after it is the material-specific "extra" payload.
+        let extra_size = instance_stride - 64;
+
+        let _ = vertex_stride; // currently unused outside pipeline creation
+        self.materials.insert(
+            handle,
+            Material {
+                vertex_spv: desc.vertex_spv.to_vec(),
+                fragment_spv: desc.fragment_spv.to_vec(),
+                vertex_attrs: desc.vertex_attrs.to_vec(),
+                instance_attrs: desc.instance_attrs.to_vec(),
+                instance_stride,
+                extra_size,
+                descriptor_set_layout,
+                pipeline_layout,
+                pipeline,
+                instance_buffers,
+                instance_buffer_memories,
+                has_sampler,
+                camera_descriptor_sets,
+                texture_descriptor_sets: HashMap::new(),
+            },
+        );
+
+        handle
     }
 
     pub(crate) fn register_mesh(&mut self, mesh: &ModelMesh) -> MeshHandle {
@@ -470,22 +535,109 @@ impl GraphicsManager {
         handle
     }
 
-    pub fn register_instance(&mut self, mesh: MeshHandle, color: [f32; 3]) -> ModelHandle {
-        assert!(
-            self.meshes.contains_key(&mesh),
-            "register_instance received unknown MeshHandle"
+    /// Register an instance of a material. The variant is selected by
+    /// `mesh` / `texture`:
+    ///
+    /// - Non-sampler material: pass `mesh = Some(_)`, `texture = None`.
+    /// - Sampler material: pass `mesh = None`, `texture = Some(_)` (the
+    ///   engine's shared unit quad is used as the geometry).
+    ///
+    /// `extra` must be exactly the size declared by the material's
+    /// `instance_attrs` after the leading [`VertexAttr::Mat4`].
+    pub fn register_material_instance(
+        &mut self,
+        material: MaterialHandle,
+        mesh: Option<MeshHandle>,
+        texture: Option<TextureHandle>,
+        extra: &[u8],
+    ) -> ModelHandle {
+        let mat = self
+            .materials
+            .get_mut(&material)
+            .expect("register_material_instance: unknown MaterialHandle");
+        assert_eq!(
+            extra.len() as u32,
+            mat.extra_size,
+            "register_material_instance: extra payload size mismatch"
         );
+        if mat.has_sampler {
+            assert!(
+                texture.is_some(),
+                "register_material_instance: sampler material requires a TextureHandle"
+            );
+        } else {
+            assert!(
+                mesh.is_some(),
+                "register_material_instance: non-sampler material requires a MeshHandle"
+            );
+        }
+        if let Some(m) = mesh {
+            assert!(
+                self.meshes.contains_key(&m),
+                "register_material_instance: unknown MeshHandle"
+            );
+        }
+
+        // Lazily allocate (material, texture) descriptor sets the first time
+        // we see this pairing.
+        if let Some(t) = texture {
+            let tex = self
+                .textures
+                .get(&t)
+                .expect("register_material_instance: unknown TextureHandle");
+            if !mat.texture_descriptor_sets.contains_key(&t) {
+                let sets = allocate_textured_descriptor_sets(
+                    &self.device,
+                    self.descriptor_pool,
+                    mat.descriptor_set_layout,
+                    &self.camera_uniform_buffers,
+                    tex.view,
+                    tex.sampler,
+                );
+                mat.texture_descriptor_sets.insert(t, sets);
+            }
+        }
+
         let handle = ModelHandle(self.next_handle);
         self.next_handle += 1;
         self.instances.insert(
             handle,
-            InstanceData {
+            MaterialInstanceData {
+                material,
                 mesh,
-                color,
+                texture,
+                extra: extra.to_vec(),
                 last_model: Mat4::IDENTITY,
             },
         );
         handle
+    }
+
+    /// Convenience wrapper for the built-in solid material. Equivalent to
+    /// `register_material_instance(solid_material(), Some(mesh), None,
+    /// bytemuck-cast(color))`.
+    pub fn register_instance(&mut self, mesh: MeshHandle, color: [f32; 3]) -> ModelHandle {
+        let bytes: [u8; 12] = unsafe { ::std::mem::transmute(color) };
+        let material = self.solid_material_handle;
+        self.register_material_instance(material, Some(mesh), None, &bytes)
+    }
+
+    /// Convenience wrapper for the built-in textured material.
+    pub fn register_textured_instance(
+        &mut self,
+        texture: TextureHandle,
+        uv_offset: [f32; 2],
+        uv_scale: [f32; 2],
+    ) -> ModelHandle {
+        let mut bytes = [0u8; 16];
+        bytes[0..8].copy_from_slice(unsafe {
+            &::std::mem::transmute::<[f32; 2], [u8; 8]>(uv_offset)
+        });
+        bytes[8..16].copy_from_slice(unsafe {
+            &::std::mem::transmute::<[f32; 2], [u8; 8]>(uv_scale)
+        });
+        let material = self.textured_material_handle;
+        self.register_material_instance(material, None, Some(texture), &bytes)
     }
 
     pub(crate) fn unregister_mesh(&mut self, mesh: MeshHandle) {
@@ -499,9 +651,15 @@ impl GraphicsManager {
         }
     }
 
-    #[allow(dead_code)]
     pub fn unregister_instance(&mut self, handle: ModelHandle) {
         self.instances.remove(&handle);
+    }
+
+    /// Alias kept for source compatibility with pre-Phase-7 game code. Today
+    /// every instance — solid or textured — lives in one `instances` map keyed
+    /// by [`ModelHandle`], so the two unregister paths are identical.
+    pub fn unregister_textured_instance(&mut self, handle: ModelHandle) {
+        self.unregister_instance(handle);
     }
 
     pub(crate) fn register_texture(&mut self, png_bytes: &[u8]) -> TextureHandle {
@@ -523,18 +681,10 @@ impl GraphicsManager {
             1,
         );
         let sampler = share::create_texture_sampler(&self.device);
-        let descriptor_sets = share::create_textured_descriptor_sets(
-            &self.device,
-            self.descriptor_pool,
-            self.textured_ubo_layout,
-            &self.camera_uniform_buffers,
-            view,
-            sampler,
-        );
 
         self.textures.insert(
             handle,
-            TextureResources { image, memory, view, sampler, descriptor_sets },
+            TextureResources { image, memory, view, sampler },
         );
         handle
     }
@@ -565,18 +715,10 @@ impl GraphicsManager {
             1,
         );
         let sampler = share::create_texture_sampler(&self.device);
-        let descriptor_sets = share::create_textured_descriptor_sets(
-            &self.device,
-            self.descriptor_pool,
-            self.textured_ubo_layout,
-            &self.camera_uniform_buffers,
-            view,
-            sampler,
-        );
 
         self.textures.insert(
             handle,
-            TextureResources { image, memory, view, sampler, descriptor_sets },
+            TextureResources { image, memory, view, sampler },
         );
         handle
     }
@@ -588,51 +730,26 @@ impl GraphicsManager {
                     .device_wait_idle()
                     .expect("device_wait_idle failed in unregister_texture");
             }
-            destroy_texture_resources(&self.device, self.descriptor_pool, &tex);
+            // Every material that has allocated descriptor sets against this
+            // texture must release them back to the pool.
+            for mat in self.materials.values_mut() {
+                if let Some(sets) = mat.texture_descriptor_sets.remove(&handle) {
+                    if !sets.is_empty() {
+                        unsafe {
+                            let _ = self
+                                .device
+                                .free_descriptor_sets(self.descriptor_pool, &sets);
+                        }
+                    }
+                }
+            }
+            destroy_texture_resources(&self.device, &tex);
         }
     }
 
-    pub fn register_textured_instance(
-        &mut self,
-        texture: TextureHandle,
-        uv_offset: [f32; 2],
-        uv_scale: [f32; 2],
-    ) -> ModelHandle {
-        assert!(
-            self.textures.contains_key(&texture),
-            "register_textured_instance received unknown TextureHandle"
-        );
-        let handle = ModelHandle(self.next_handle);
-        self.next_handle += 1;
-        self.textured_instances.insert(
-            handle,
-            TexturedInstanceData {
-                texture,
-                uv_offset,
-                uv_scale,
-                last_model: Mat4::IDENTITY,
-            },
-        );
-        handle
-    }
-
-    #[allow(dead_code)]
-    pub fn unregister_textured_instance(&mut self, handle: ModelHandle) {
-        self.textured_instances.remove(&handle);
-    }
-
-    /// Push the active camera's matrices to the shared UBOs.
-    ///
-    /// Must be called before each `draw_frame` (the App does this). View comes
-    /// straight from the camera; projection is derived against the current
-    /// swapchain aspect ratio, so resizing the window automatically updates
-    /// the proj on the next call without the caller doing anything.
-    ///
-    /// Matrices are cached and writes are skipped when nothing changed —
-    /// today's static-camera games pay only an equality check per frame. A
-    /// change forces `device_wait_idle` + a write to every per-swapchain-image
-    /// UBO, which is the simple-but-stalling path. If a future game moves the
-    /// camera every frame, this should grow into per-frame-in-flight UBOs.
+    /// Push the active camera's matrices to the shared UBOs. See the inline
+    /// comments in the pre-Phase-7 module documentation for the cache-checked
+    /// write strategy.
     pub fn set_camera(&mut self, camera: &Camera2D) {
         let aspect =
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
@@ -687,155 +804,129 @@ impl GraphicsManager {
         // A handle in `transforms` that isn't registered is a programming error → panic.
         // A registered handle missing from `transforms` keeps last frame's matrix.
         for (handle, transform) in transforms {
-            if let Some(inst) = self.instances.get_mut(handle) {
-                inst.last_model = *transform;
-            } else if let Some(tinst) = self.textured_instances.get_mut(handle) {
-                tinst.last_model = *transform;
+            match self.instances.get_mut(handle) {
+                Some(inst) => inst.last_model = *transform,
+                None => panic!("draw_frame received transform for unknown ModelHandle"),
+            }
+        }
+
+        // Per-material batching. Iterate materials in registration order
+        // (MaterialHandle order) — this preserves today's "solid first,
+        // textured second" paint order because the engine registers them in
+        // that order during `new`.
+        let mut batches: Vec<MaterialBatch> = Vec::new();
+        let mut material_handles: Vec<MaterialHandle> = self.materials.keys().copied().collect();
+        material_handles.sort();
+
+        for mh in material_handles {
+            let mat = &self.materials[&mh];
+            // Gather instances owned by this material.
+            let mut owned: Vec<(ModelHandle, &MaterialInstanceData)> = self
+                .instances
+                .iter()
+                .filter(|(_, ii)| ii.material == mh)
+                .map(|(h, ii)| (*h, ii))
+                .collect();
+            if owned.is_empty() {
+                continue;
+            }
+            owned.sort_by_key(|(h, _)| *h);
+
+            // Pack instance bytes (model + extra) contiguously, ordered by
+            // group (mesh for non-sampler, texture for sampler).
+            let mut packed: Vec<u8> = Vec::with_capacity(owned.len() * mat.instance_stride as usize);
+            let mut draws: Vec<MaterialDraw> = Vec::new();
+
+            if mat.has_sampler {
+                // Group by texture.
+                let mut by_texture: HashMap<TextureHandle, Vec<(ModelHandle, &MaterialInstanceData)>> =
+                    HashMap::new();
+                for (h, ii) in owned.iter() {
+                    if let Some(t) = ii.texture {
+                        by_texture.entry(t).or_default().push((*h, ii));
+                    }
+                }
+                let mut tex_handles: Vec<TextureHandle> = by_texture.keys().copied().collect();
+                tex_handles.sort_by_key(|t| t.0);
+                for th in tex_handles {
+                    let group = by_texture.get_mut(&th).unwrap();
+                    group.sort_by_key(|(h, _)| *h);
+                    let offset_bytes = packed.len() as u64;
+                    let count = group.len() as u32;
+                    for (_, ii) in group.iter() {
+                        append_instance_bytes(&mut packed, mat.instance_stride, ii);
+                    }
+                    let sets = mat
+                        .texture_descriptor_sets
+                        .get(&th)
+                        .expect("draw_frame: missing per-texture descriptor sets");
+                    draws.push(MaterialDraw {
+                        descriptor_set: sets[image_index as usize],
+                        mesh_vertex_buffer: self.textured_quad_vertex_buffer,
+                        mesh_index_buffer: self.textured_quad_index_buffer,
+                        mesh_index_count: self.textured_quad_index_count,
+                        instance_offset: offset_bytes,
+                        instance_count: count,
+                    });
+                }
             } else {
-                panic!("draw_frame received transform for unknown ModelHandle");
+                // Group by mesh.
+                let mut by_mesh: HashMap<MeshHandle, Vec<(ModelHandle, &MaterialInstanceData)>> =
+                    HashMap::new();
+                for (h, ii) in owned.iter() {
+                    if let Some(m) = ii.mesh {
+                        by_mesh.entry(m).or_default().push((*h, ii));
+                    }
+                }
+                let mut mesh_handles: Vec<MeshHandle> = by_mesh.keys().copied().collect();
+                mesh_handles.sort();
+                let camera_set = mat.camera_descriptor_sets[image_index as usize];
+                for mhk in mesh_handles {
+                    let group = by_mesh.get_mut(&mhk).unwrap();
+                    group.sort_by_key(|(h, _)| *h);
+                    let mesh = &self.meshes[&mhk];
+                    let offset_bytes = packed.len() as u64;
+                    let count = group.len() as u32;
+                    for (_, ii) in group.iter() {
+                        append_instance_bytes(&mut packed, mat.instance_stride, ii);
+                    }
+                    draws.push(MaterialDraw {
+                        descriptor_set: camera_set,
+                        mesh_vertex_buffer: mesh.vertex_buffer,
+                        mesh_index_buffer: mesh.index_buffer,
+                        mesh_index_count: mesh.index_count,
+                        instance_offset: offset_bytes,
+                        instance_count: count,
+                    });
+                }
             }
-        }
 
-        // SOLID-COLOUR: group instances by mesh and pack them into the per-frame
-        // instance buffer. Iterate meshes in MeshHandle order so the layout is
-        // deterministic; iterate instances inside each mesh by ModelHandle order.
-        let mut instances_by_mesh: HashMap<MeshHandle, Vec<(ModelHandle, &InstanceData)>> =
-            HashMap::new();
-        for (h, inst) in self.instances.iter() {
-            instances_by_mesh
-                .entry(inst.mesh)
-                .or_insert_with(Vec::new)
-                .push((*h, inst));
-        }
-
-        let mut packed: Vec<Instance> = Vec::with_capacity(self.instances.len());
-        let mut solid_draws: Vec<share::SolidDraw> = Vec::new();
-        let mut mesh_handles: Vec<MeshHandle> = self.meshes.keys().copied().collect();
-        mesh_handles.sort();
-        for mh in mesh_handles {
-            let group = match instances_by_mesh.get_mut(&mh) {
-                Some(g) => g,
-                None => continue,
-            };
-            group.sort_by_key(|(h, _)| *h);
-            let mesh = &self.meshes[&mh];
-            let offset_bytes = (packed.len() * ::std::mem::size_of::<Instance>()) as u64;
-            let count = group.len() as u32;
-            for (_, inst) in group.iter() {
-                packed.push(Instance {
-                    model: inst.last_model,
-                    color: inst.color,
-                });
+            if !packed.is_empty() {
+                let buffer_size = packed.len() as vk::DeviceSize;
+                unsafe {
+                    let data_ptr = self
+                        .device
+                        .map_memory(
+                            mat.instance_buffer_memories[self.current_frame],
+                            0,
+                            buffer_size,
+                            vk::MemoryMapFlags::empty(),
+                        )
+                        .expect("Failed to map material instance buffer memory")
+                        as *mut u8;
+                    data_ptr.copy_from_nonoverlapping(packed.as_ptr(), packed.len());
+                    self.device
+                        .unmap_memory(mat.instance_buffer_memories[self.current_frame]);
+                }
             }
-            solid_draws.push(share::SolidDraw {
-                mesh_vertex_buffer: mesh.vertex_buffer,
-                mesh_index_buffer: mesh.index_buffer,
-                mesh_index_count: mesh.index_count,
-                instance_buffer: self.instance_buffers[self.current_frame],
-                instance_offset: offset_bytes,
-                instance_count: count,
+
+            batches.push(MaterialBatch {
+                pipeline: mat.pipeline,
+                pipeline_layout: mat.pipeline_layout,
+                instance_buffer: mat.instance_buffers[self.current_frame],
+                draws,
             });
         }
-
-        if !packed.is_empty() {
-            let buffer_size =
-                (packed.len() * ::std::mem::size_of::<Instance>()) as vk::DeviceSize;
-            unsafe {
-                let data_ptr = self
-                    .device
-                    .map_memory(
-                        self.instance_buffer_memories[self.current_frame],
-                        0,
-                        buffer_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .expect("Failed to map instance buffer memory")
-                    as *mut Instance;
-                data_ptr.copy_from_nonoverlapping(packed.as_ptr(), packed.len());
-                self.device
-                    .unmap_memory(self.instance_buffer_memories[self.current_frame]);
-            }
-        }
-
-        // TEXTURED: same idea, grouped by texture. Iterate textures in
-        // TextureHandle order; iterate instances inside each texture by
-        // ModelHandle order.
-        let mut tinstances_by_texture: HashMap<
-            TextureHandle,
-            Vec<(ModelHandle, &TexturedInstanceData)>,
-        > = HashMap::new();
-        for (h, ti) in self.textured_instances.iter() {
-            tinstances_by_texture
-                .entry(ti.texture)
-                .or_insert_with(Vec::new)
-                .push((*h, ti));
-        }
-
-        let mut tpacked: Vec<TexturedInstance> =
-            Vec::with_capacity(self.textured_instances.len());
-        let mut textured_draws: Vec<share::TexturedDraw> = Vec::new();
-        let mut texture_handles: Vec<TextureHandle> =
-            self.textures.keys().copied().collect();
-        texture_handles.sort_by_key(|h| h.0);
-        let camera_set = self.camera_descriptor_sets[image_index as usize];
-        let _ = camera_set; // camera UBO is bound through each texture's descriptor set.
-        for th in texture_handles {
-            let group = match tinstances_by_texture.get_mut(&th) {
-                Some(g) => g,
-                None => continue,
-            };
-            group.sort_by_key(|(h, _)| *h);
-            let tex = &self.textures[&th];
-            let offset_bytes =
-                (tpacked.len() * ::std::mem::size_of::<TexturedInstance>()) as u64;
-            let count = group.len() as u32;
-            for (_, ti) in group.iter() {
-                tpacked.push(TexturedInstance {
-                    model: ti.last_model,
-                    uv_offset: ti.uv_offset,
-                    uv_scale: ti.uv_scale,
-                });
-            }
-            textured_draws.push(share::TexturedDraw {
-                descriptor_set: tex.descriptor_sets[image_index as usize],
-                instance_buffer: self.textured_instance_buffers[self.current_frame],
-                instance_offset: offset_bytes,
-                instance_count: count,
-            });
-        }
-
-        if !tpacked.is_empty() {
-            let buffer_size =
-                (tpacked.len() * ::std::mem::size_of::<TexturedInstance>()) as vk::DeviceSize;
-            unsafe {
-                let data_ptr = self
-                    .device
-                    .map_memory(
-                        self.textured_instance_buffer_memories[self.current_frame],
-                        0,
-                        buffer_size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .expect("Failed to map textured instance buffer memory")
-                    as *mut TexturedInstance;
-                data_ptr.copy_from_nonoverlapping(tpacked.as_ptr(), tpacked.len());
-                self.device
-                    .unmap_memory(self.textured_instance_buffer_memories[self.current_frame]);
-            }
-        }
-
-        let solid_pipeline = share::SolidPipeline {
-            pipeline: self.graphics_pipeline,
-            layout: self.pipeline_layout,
-            camera_set,
-        };
-        let textured_pipeline = share::TexturedPipeline {
-            pipeline: self.textured_pipeline,
-            layout: self.textured_pipeline_layout,
-            mesh_vertex_buffer: self.textured_quad_vertex_buffer,
-            mesh_index_buffer: self.textured_quad_index_buffer,
-            mesh_index_count: self.textured_quad_index_count,
-        };
 
         let command_buffer = self.command_buffers[self.current_frame];
         unsafe {
@@ -844,29 +935,20 @@ impl GraphicsManager {
                 .expect("Failed to reset command buffer");
         }
         // Draw order is load-bearing: the render pass has no depth attachment
-        // and neither pipeline blends, so command order *is* paint order.
-        // Solids first (paddles, walls, digit segments), textured second
-        // (ball sprite, label glyphs) so on-top sprites appear on top.
-        // If a future feature ever needs interleaving (e.g. textured
-        // background → solid HUD → textured tooltip), the per-pipeline
-        // batching below has to grow into a more general per-draw ordering.
-        share::record_command_buffer(
+        // and the pipelines don't blend, so command order *is* paint order.
+        // Materials are iterated in registration order so that game code can
+        // control overdraw layering by the order it registers materials in.
+        record_material_command_buffer(
             &self.device,
             command_buffer,
             self.swapchain_framebuffers[image_index as usize],
             self.render_pass,
             self.swapchain_extent,
-            &solid_pipeline,
-            &solid_draws,
-            &textured_pipeline,
-            &textured_draws,
+            &batches,
         );
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-        // Per-image, not per-frame: presentation may still be using this
-        // semaphore on whichever swapchain image was previously paired with
-        // current_frame. Indexing by image_index avoids that collision.
         let signal_semaphores = [self.render_finished_semaphores[image_index as usize]];
 
         let submit_infos = [vk::SubmitInfo {
@@ -931,12 +1013,10 @@ impl GraphicsManager {
     }
 
     fn recreate_swapchain(&mut self) {
-        // parameters -------------
         let surface_suff = SurfaceStuff {
             surface_loader: self.surface_loader.clone(),
             surface: self.surface,
         };
-        // ------------------------
 
         unsafe {
             self.device
@@ -961,9 +1041,6 @@ impl GraphicsManager {
         self.swapchain_format = new_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
-        // render_finished_semaphores are indexed by swapchain image; rebuild
-        // them if the new swapchain has a different image count. device_wait_idle
-        // above guarantees no submission still references the old semaphores.
         let new_image_count = self.swapchain_images.len();
         if new_image_count != self.render_finished_semaphores.len() {
             unsafe {
@@ -975,43 +1052,42 @@ impl GraphicsManager {
                 share::create_render_finished_semaphores(&self.device, new_image_count);
         }
 
-        // Aspect ratio changed — invalidate the cached camera matrices so the
-        // next `set_camera` rewrites the UBOs with the new projection. The
-        // App calls `set_camera` once per frame, before `draw_frame`, so a
-        // single OOD frame is the worst case before the new proj lands.
         self.last_camera_view = None;
         self.last_camera_proj = None;
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
-        // Render pass only depends on swapchain format, which rarely changes —
-        // skip the destroy + recreate when the format is unchanged.
         if format_changed {
             unsafe {
                 self.device.destroy_render_pass(self.render_pass, None);
             }
             self.render_pass = share::create_render_pass(&self.device, self.swapchain_format);
         }
-        let (graphics_pipeline, pipeline_layout) = share::create_graphics_pipeline(
-            &self.device,
-            self.render_pass,
-            swapchain_stuff.swapchain_extent,
-            self.ubo_layout,
-            self.pipeline_cache,
-        );
-        self.graphics_pipeline = graphics_pipeline;
-        self.pipeline_layout = pipeline_layout;
 
-        let (textured_pipeline, textured_pipeline_layout) =
-            share::create_textured_graphics_pipeline(
+        // Rebuild every material's pipeline (viewport/scissor are baked in,
+        // so a swapchain-extent change invalidates them). Descriptor set
+        // layouts and instance buffers survive — only the pipeline + pipeline
+        // layout are recreated.
+        for mat in self.materials.values_mut() {
+            unsafe {
+                self.device.destroy_pipeline(mat.pipeline, None);
+                self.device
+                    .destroy_pipeline_layout(mat.pipeline_layout, None);
+            }
+            let (pipeline, pipeline_layout, _vs, _is) = create_material_pipeline(
                 &self.device,
                 self.render_pass,
-                swapchain_stuff.swapchain_extent,
-                self.textured_ubo_layout,
+                self.swapchain_extent,
+                mat.descriptor_set_layout,
                 self.pipeline_cache,
+                &mat.vertex_spv,
+                &mat.fragment_spv,
+                &mat.vertex_attrs,
+                &mat.instance_attrs,
             );
-        self.textured_pipeline = textured_pipeline;
-        self.textured_pipeline_layout = textured_pipeline_layout;
+            mat.pipeline = pipeline;
+            mat.pipeline_layout = pipeline_layout;
+        }
 
         self.swapchain_framebuffers = share::create_framebuffers(
             &self.device,
@@ -1026,18 +1102,145 @@ impl GraphicsManager {
             for &framebuffer in self.swapchain_framebuffers.iter() {
                 self.device.destroy_framebuffer(framebuffer, None);
             }
-            self.device.destroy_pipeline(self.graphics_pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_pipeline(self.textured_pipeline, None);
-            self.device
-                .destroy_pipeline_layout(self.textured_pipeline_layout, None);
             for &image_view in self.swapchain_imageviews.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
             self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
         }
+    }
+}
+
+/// Internal per-material draw record produced inside `draw_frame`.
+struct MaterialBatch {
+    pipeline: vk::Pipeline,
+    pipeline_layout: vk::PipelineLayout,
+    instance_buffer: vk::Buffer,
+    draws: Vec<MaterialDraw>,
+}
+
+struct MaterialDraw {
+    descriptor_set: vk::DescriptorSet,
+    mesh_vertex_buffer: vk::Buffer,
+    mesh_index_buffer: vk::Buffer,
+    mesh_index_count: u32,
+    instance_offset: u64,
+    instance_count: u32,
+}
+
+fn append_instance_bytes(out: &mut Vec<u8>, instance_stride: u32, inst: &MaterialInstanceData) {
+    let stride = instance_stride as usize;
+    let start = out.len();
+    out.resize(start + stride, 0);
+    let dst = &mut out[start..start + stride];
+    // Model matrix: 64 bytes at offset 0. glam's Mat4 is #[repr(C)] of 16 f32
+    // columns; a raw byte copy is layout-equivalent to the previous typed copy.
+    let m_bytes: &[u8] = unsafe {
+        ::std::slice::from_raw_parts(
+            (&inst.last_model as *const Mat4) as *const u8,
+            ::std::mem::size_of::<Mat4>(),
+        )
+    };
+    dst[0..64].copy_from_slice(m_bytes);
+    if !inst.extra.is_empty() {
+        dst[64..64 + inst.extra.len()].copy_from_slice(&inst.extra);
+    }
+}
+
+fn record_material_command_buffer(
+    device: &ash::Device,
+    command_buffer: vk::CommandBuffer,
+    framebuffer: vk::Framebuffer,
+    render_pass: vk::RenderPass,
+    surface_extent: vk::Extent2D,
+    batches: &[MaterialBatch],
+) {
+    let begin_info = vk::CommandBufferBeginInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        p_inheritance_info: ptr::null(),
+        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+        ..Default::default()
+    };
+
+    let clear_values = [vk::ClearValue {
+        color: vk::ClearColorValue {
+            float32: [0.0, 0.0, 0.0, 1.0],
+        },
+    }];
+
+    let render_pass_begin_info = vk::RenderPassBeginInfo {
+        s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
+        p_next: ptr::null(),
+        render_pass,
+        framebuffer,
+        render_area: vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: surface_extent,
+        },
+        clear_value_count: clear_values.len() as u32,
+        p_clear_values: clear_values.as_ptr(),
+        ..Default::default()
+    };
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &begin_info)
+            .expect("Failed to begin recording Command Buffer!");
+        device.cmd_begin_render_pass(
+            command_buffer,
+            &render_pass_begin_info,
+            vk::SubpassContents::INLINE,
+        );
+
+        for batch in batches.iter() {
+            if batch.draws.is_empty() {
+                continue;
+            }
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                batch.pipeline,
+            );
+            let mut current_set = vk::DescriptorSet::null();
+            for d in batch.draws.iter() {
+                if d.descriptor_set != current_set {
+                    let sets = [d.descriptor_set];
+                    device.cmd_bind_descriptor_sets(
+                        command_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        batch.pipeline_layout,
+                        0,
+                        &sets,
+                        &[],
+                    );
+                    current_set = d.descriptor_set;
+                }
+                let vertex_buffers = [d.mesh_vertex_buffer, batch.instance_buffer];
+                let offsets = [0_u64, d.instance_offset];
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    d.mesh_index_buffer,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                device.cmd_draw_indexed(
+                    command_buffer,
+                    d.mesh_index_count,
+                    d.instance_count,
+                    0,
+                    0,
+                    0,
+                );
+            }
+        }
+
+        device.cmd_end_render_pass(command_buffer);
+
+        device
+            .end_command_buffer(command_buffer)
+            .expect("Failed to record Command Buffer at Ending!");
     }
 }
 
@@ -1056,8 +1259,6 @@ impl Drop for GraphicsManager {
             self.cleanup_swapchain();
             self.device.destroy_render_pass(self.render_pass, None);
 
-            // Save before destroying — the cache is what we want persisted, not
-            // the file. Best-effort: any IO error is silently ignored.
             save_pipeline_cache(&self.device, self.pipeline_cache);
             self.device.destroy_pipeline_cache(self.pipeline_cache, None);
 
@@ -1068,7 +1269,25 @@ impl Drop for GraphicsManager {
                 destroy_mesh(&self.device, mesh);
             }
             for tex in self.textures.values() {
-                destroy_texture_resources(&self.device, self.descriptor_pool, tex);
+                destroy_texture_resources(&self.device, tex);
+            }
+
+            // Tear down each registered material: pipeline, layout,
+            // descriptor-set layout, per-frame instance buffers. Descriptor
+            // sets allocated from `descriptor_pool` (camera + per-texture) get
+            // freed implicitly when the pool is destroyed.
+            for mat in self.materials.values() {
+                self.device.destroy_pipeline(mat.pipeline, None);
+                self.device
+                    .destroy_pipeline_layout(mat.pipeline_layout, None);
+                self.device
+                    .destroy_descriptor_set_layout(mat.descriptor_set_layout, None);
+                for &b in mat.instance_buffers.iter() {
+                    self.device.destroy_buffer(b, None);
+                }
+                for &m in mat.instance_buffer_memories.iter() {
+                    self.device.free_memory(m, None);
+                }
             }
 
             self.device
@@ -1080,19 +1299,6 @@ impl Drop for GraphicsManager {
             self.device
                 .free_memory(self.textured_quad_vertex_memory, None);
 
-            for &b in self.instance_buffers.iter() {
-                self.device.destroy_buffer(b, None);
-            }
-            for &m in self.instance_buffer_memories.iter() {
-                self.device.free_memory(m, None);
-            }
-            for &b in self.textured_instance_buffers.iter() {
-                self.device.destroy_buffer(b, None);
-            }
-            for &m in self.textured_instance_buffer_memories.iter() {
-                self.device.free_memory(m, None);
-            }
-
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
             for i in 0..self.camera_uniform_buffers.len() {
@@ -1101,11 +1307,6 @@ impl Drop for GraphicsManager {
                 self.device
                     .free_memory(self.camera_uniform_buffers_memory[i], None);
             }
-
-            self.device
-                .destroy_descriptor_set_layout(self.ubo_layout, None);
-            self.device
-                .destroy_descriptor_set_layout(self.textured_ubo_layout, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
 
@@ -1150,49 +1351,4 @@ fn save_pipeline_cache(device: &ash::Device, cache: vk::PipelineCache) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(path, data);
-}
-
-// Persistent host-visible+coherent instance buffers (one per frame in flight).
-// Each frame's buffer is rewritten in draw_frame before being read by the GPU.
-// Coherent memory means we don't need explicit flushes.
-fn create_instance_buffers(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
-    count: usize,
-) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
-    let buffer_size =
-        (MAX_INSTANCES * ::std::mem::size_of::<Instance>()) as vk::DeviceSize;
-    create_per_frame_vertex_buffers(device, mem_props, count, buffer_size)
-}
-
-fn create_textured_instance_buffers(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
-    count: usize,
-) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
-    let buffer_size =
-        (MAX_TEXTURED_INSTANCES * ::std::mem::size_of::<TexturedInstance>()) as vk::DeviceSize;
-    create_per_frame_vertex_buffers(device, mem_props, count, buffer_size)
-}
-
-fn create_per_frame_vertex_buffers(
-    device: &ash::Device,
-    mem_props: &vk::PhysicalDeviceMemoryProperties,
-    count: usize,
-    buffer_size: vk::DeviceSize,
-) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
-    let mut buffers = Vec::with_capacity(count);
-    let mut memories = Vec::with_capacity(count);
-    for _ in 0..count {
-        let (buffer, memory) = share::create_buffer(
-            device,
-            buffer_size,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-            mem_props,
-        );
-        buffers.push(buffer);
-        memories.push(memory);
-    }
-    (buffers, memories)
 }

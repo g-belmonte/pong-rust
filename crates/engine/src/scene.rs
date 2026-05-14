@@ -59,7 +59,9 @@ use glam::{Mat4, Quat, Vec3};
 use crate::audio::AudioManager;
 use crate::camera::Camera2D;
 use crate::graphics_manager::structures::hidden_transform;
-use crate::graphics_manager::{GraphicsManager, MeshHandle, ModelHandle, TextureHandle};
+use crate::graphics_manager::{
+    GraphicsManager, MaterialHandle, MeshHandle, ModelHandle, TextureHandle,
+};
 use crate::input::Input;
 use crate::resources::Resources;
 use crate::time::Time;
@@ -101,13 +103,30 @@ impl Transform {
 /// What an `Object` draws, if anything. `None` is for logic-only objects
 /// (controllers) and for multi-instance entities whose behaviour owns the
 /// draws directly.
-#[derive(Clone, Copy)]
+///
+/// `Solid` and `Textured` are sugar over the engine's two built-in materials.
+/// `Material` lets game code use a custom material registered through
+/// [`Resources::load_material`](crate::resources::Resources::load_material);
+/// `instance_data` is the per-instance payload **after** the leading model
+/// matrix and must match the material's declared instance layout in size.
+#[derive(Clone)]
 pub enum Renderable {
     Solid { mesh: MeshHandle, color: [f32; 3] },
     Textured {
         texture: TextureHandle,
         uv_offset: [f32; 2],
         uv_scale: [f32; 2],
+    },
+    Material {
+        material: MaterialHandle,
+        /// `Some` for non-sampler materials; `None` for sampler materials
+        /// (which draw against the engine's shared unit quad).
+        mesh: Option<MeshHandle>,
+        /// `Some` for sampler materials; `None` for non-sampler materials.
+        texture: Option<TextureHandle>,
+        /// Raw per-instance bytes after the model matrix. Length must equal
+        /// the material's `instance_stride - 64`.
+        instance_data: Vec<u8>,
     },
 }
 
@@ -323,7 +342,7 @@ impl Scene {
         for cmd in cmds {
             match cmd {
                 SceneCommand::Spawn(id, mut obj) => {
-                    if let Some(r) = obj.renderable {
+                    if let Some(r) = obj.renderable.clone() {
                         obj.model_handle = Some(match r {
                             Renderable::Solid { mesh, color } => {
                                 gm.register_instance(mesh, color)
@@ -333,21 +352,28 @@ impl Scene {
                                 uv_offset,
                                 uv_scale,
                             } => gm.register_textured_instance(texture, uv_offset, uv_scale),
+                            Renderable::Material {
+                                material,
+                                mesh,
+                                texture,
+                                instance_data,
+                            } => gm.register_material_instance(
+                                material,
+                                mesh,
+                                texture,
+                                &instance_data,
+                            ),
                         });
                     }
                     self.objects.insert(id, obj);
                 }
                 SceneCommand::Despawn(id) => {
                     if let Some(mut obj) = self.objects.remove(&id) {
-                        if let (Some(handle), Some(renderable)) =
-                            (obj.model_handle, obj.renderable)
-                        {
-                            match renderable {
-                                Renderable::Solid { .. } => gm.unregister_instance(handle),
-                                Renderable::Textured { .. } => {
-                                    gm.unregister_textured_instance(handle)
-                                }
-                            }
+                        if let Some(handle) = obj.model_handle {
+                            // All three variants live in the same `instances`
+                            // map on `GraphicsManager` today; unregister_instance
+                            // covers them uniformly.
+                            gm.unregister_instance(handle);
                         }
                         for b in obj.behaviours.iter_mut() {
                             b.on_despawn(gm);
