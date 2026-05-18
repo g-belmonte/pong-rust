@@ -267,7 +267,12 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
     // Resource RAII flush must happen between frames — see resources.rs for
     // why we don't do it in Drop.
     engine.resources.flush_pending(&mut engine.graphics_manager);
-    engine.graphics_manager.set_camera(&*engine.scene.camera);
+    // Push every populated camera slot. Cache-checked per slot, so static
+    // cameras only pay the actual `device_wait_idle` + UBO-write cost the
+    // first time they change.
+    for (&slot, camera) in engine.scene.cameras.iter() {
+        engine.graphics_manager.set_camera(slot, &**camera);
+    }
     let transforms = engine.scene.collect_transforms();
     engine.graphics_manager.draw_frame(&transforms);
 

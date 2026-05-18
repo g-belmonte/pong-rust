@@ -15,7 +15,7 @@
 use std::any::Any;
 use std::f32::consts::TAU;
 
-use engine::camera::Camera3D;
+use engine::camera::{Camera2D, Camera3D};
 use engine::graphics_manager::structures::ModelMesh;
 use engine::graphics_manager::{
     Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
@@ -23,7 +23,9 @@ use engine::graphics_manager::{
 use engine::input::KeyCode;
 use engine::resources::{Mesh, Resources};
 use engine::scene::{Behaviour, Object, Renderable, Scene, Transform, UpdateCtx};
-use engine::{Quat, Vec3};
+use engine::{Quat, Vec2, Vec3};
+
+use crate::hud::{FontAtlas, HudLabelBehaviour};
 
 /// Cube colour (RGB, linear). Modulated per-fragment by Lambertian shading
 /// against the lit shader's hardcoded directional light.
@@ -34,17 +36,46 @@ const CUBE_COLOR: [f32; 3] = [0.85, 0.45, 0.25];
 const SPIN_X: f32 = TAU * 0.15;
 const SPIN_Y: f32 = TAU * 0.22;
 
+/// HUD camera half-height in HUD-world units. With `half_height = 1.0` the
+/// vertical axis runs from -1 (top) to +1 (bottom — Camera2D is Y-down) and
+/// horizontal runs ±aspect.
+const HUD_HALF_HEIGHT: f32 = 1.0;
+
+/// Bundled font for the HUD label. Kept in test-3d/assets so the crate is
+/// self-contained — Pong has its own copy.
+const HUD_FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+
+/// Atlas raster size. 48 px is the same setting Pong's text.rs uses; matched
+/// here so visuals are consistent at the resolutions a desktop user runs at.
+const HUD_FONT_PX: f32 = 48.0;
+
+/// Atlas-pixel → HUD-world scale. 0.0035 puts the label glyphs at roughly
+/// 17% of HUD height — visible but not overwhelming.
+const HUD_TEXT_SCALE: f32 = 0.0035;
+
+/// HUD label sits near the top of the screen (Camera2D is Y-down, so
+/// negative Y is up).
+const HUD_TEXT_POSITION: Vec3 = Vec3::new(0.0, -0.82, 0.0);
+
+const HUD_LABEL: &str = "3D demo (Esc to quit)";
+
 pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
     let mut scene = Scene::new();
 
-    scene.camera = Box::new(Camera3D::new(
-        Vec3::new(2.5, 2.0, 4.0),
-        Vec3::ZERO,
-        Vec3::Y,
-        std::f32::consts::FRAC_PI_3,
-        0.1,
-        100.0,
-    ));
+    // Slot 0: 3D world camera (the cube renders against this).
+    scene.set_camera(
+        0,
+        Box::new(Camera3D::new(
+            Vec3::new(2.5, 2.0, 4.0),
+            Vec3::ZERO,
+            Vec3::Y,
+            std::f32::consts::FRAC_PI_3,
+            0.1,
+            100.0,
+        )),
+    );
+    // Slot 1: 2D HUD camera (the text label renders against this).
+    scene.set_camera(1, Box::new(Camera2D::new(Vec2::ZERO, HUD_HALF_HEIGHT)));
 
     let lit_material = resources.load_material(
         gm,
@@ -53,7 +84,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
             fragment_spv: include_bytes!("../../engine/shaders/spv/lit.frag.spv"),
             vertex_attrs: &[VertexAttr::F32x3, VertexAttr::F32x3, VertexAttr::F32x2],
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
-            bindings: &[Binding::CameraUbo],
+            bindings: &[Binding::CameraUbo(0)],
             depth: DepthMode::ReadWrite,
         },
     );
@@ -80,6 +111,24 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
                 yaw: 0.0,
                 pitch: 0.0,
             }),
+    );
+
+    // HUD: a text label drawn against camera slot 1, with depth disabled so
+    // it paints on top of the cube. The label Object has no `Renderable` of
+    // its own — `HudLabelBehaviour` owns the per-glyph instances and
+    // contributes them via `collect_renderables`.
+    let hud_material = crate::hud::register_hud_material(resources, gm);
+    let atlas = FontAtlas::build(resources, gm, HUD_FONT_BYTES, HUD_FONT_PX);
+    scene.spawn(
+        Object::new()
+            .with_position(HUD_TEXT_POSITION)
+            .with_behaviour(HudLabelBehaviour::new(
+                gm,
+                atlas,
+                hud_material,
+                HUD_LABEL,
+                HUD_TEXT_SCALE,
+            )),
     );
 
     scene

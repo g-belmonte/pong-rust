@@ -4,6 +4,7 @@
 //! lit material, a 3D cube mesh, and `Camera3D` — without any of the 2D
 //! built-ins.
 
+mod hud;
 mod scene;
 
 fn main() {

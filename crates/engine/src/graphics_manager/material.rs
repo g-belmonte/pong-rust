@@ -74,8 +74,14 @@ impl VertexAttr {
 /// Descriptor set bindings a material may consume.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Binding {
-    /// The shared camera `(view, proj)` UBO bound at descriptor binding 0.
-    CameraUbo,
+    /// The camera `(view, proj)` UBO at descriptor binding 0, sampled from
+    /// the camera slot given by the `u32`. Slot 0 is the conventional
+    /// default; secondary slots (e.g. slot 1 for a 2D HUD camera over a 3D
+    /// world camera in slot 0) are populated via
+    /// [`Scene::set_camera`](crate::scene::Scene::set_camera). A material may
+    /// declare at most one `CameraUbo` binding — only one camera UBO is bound
+    /// per pipeline.
+    CameraUbo(u32),
     /// A combined image sampler bound at descriptor binding 1. Presence in the
     /// binding list flips the material into "textured-like" batching (instances
     /// keyed by texture, shared unit-quad mesh).
@@ -144,6 +150,12 @@ pub(crate) struct Material {
     /// initial registration and `recreate_swapchain` rebuilds.
     pub(crate) depth: DepthMode,
 
+    /// Camera slot this material samples — extracted from `Binding::CameraUbo`
+    /// at registration time. The renderer uses this to pick the right
+    /// per-slot UBO buffers when allocating descriptor sets (initial +
+    /// post-swapchain-recreation) and when writing camera matrices.
+    pub(crate) camera_slot: u32,
+
     // ----- Pipeline state (rebuilt on swapchain recreation) -----
     pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
     pub(crate) pipeline_layout: vk::PipelineLayout,
@@ -174,6 +186,17 @@ impl Material {
     pub(crate) fn has_sampler_binding(bindings: &[Binding]) -> bool {
         bindings.iter().any(|b| matches!(b, Binding::Sampler2d))
     }
+
+    /// Extract the camera slot a material samples. Returns `None` for
+    /// materials with no `CameraUbo` binding (none exist in the engine
+    /// today, but the API permits it). Multiple `CameraUbo` bindings would
+    /// hit the assert in [`crate::graphics_manager::GraphicsManager::register_material`].
+    pub(crate) fn camera_slot(bindings: &[Binding]) -> Option<u32> {
+        bindings.iter().find_map(|b| match b {
+            Binding::CameraUbo(slot) => Some(*slot),
+            _ => None,
+        })
+    }
 }
 
 /// Build the descriptor-set-layout bindings for a material, derived from its
@@ -186,7 +209,9 @@ pub(crate) fn create_descriptor_set_layout(
     let mut layout_bindings: Vec<vk::DescriptorSetLayoutBinding> = Vec::new();
     for b in bindings {
         match b {
-            Binding::CameraUbo => layout_bindings.push(vk::DescriptorSetLayoutBinding {
+            // The camera *slot* picks which UBO to bind from the renderer;
+            // the descriptor-set binding index in the shader is always 0.
+            Binding::CameraUbo(_slot) => layout_bindings.push(vk::DescriptorSetLayoutBinding {
                 binding: 0,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,

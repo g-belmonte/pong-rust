@@ -264,11 +264,13 @@ enum SceneCommand {
 }
 
 pub struct Scene {
-    /// Active camera. The renderer reads this each frame via
-    /// `GraphicsManager::set_camera`. Defaults to a [`Camera2D`]; swap in a
-    /// [`Camera3D`](crate::camera::Camera3D) at build time for a 3D scene
-    /// (`scene.camera = Box::new(Camera3D::new(...))`).
-    pub camera: Box<dyn Camera>,
+    /// Active cameras, keyed by slot. Each material declares which slot it
+    /// samples via [`Binding::CameraUbo(slot)`](crate::graphics_manager::Binding::CameraUbo);
+    /// slot 0 is the conventional default and is populated by [`Scene::new`]
+    /// with a [`Camera2D`]. A 3D-world + 2D-HUD scene populates slot 0 with
+    /// a `Camera3D` (world) and slot 1 with a `Camera2D` (HUD); the HUD
+    /// material then binds slot 1.
+    pub cameras: HashMap<u32, Box<dyn Camera>>,
     objects: HashMap<ObjectId, Object>,
     next_id: u32,
     commands: Vec<SceneCommand>,
@@ -282,12 +284,30 @@ impl Default for Scene {
 
 impl Scene {
     pub fn new() -> Self {
+        let mut cameras: HashMap<u32, Box<dyn Camera>> = HashMap::new();
+        cameras.insert(0, Box::new(Camera2D::default()));
         Self {
-            camera: Box::new(Camera2D::default()),
+            cameras,
             objects: HashMap::new(),
             next_id: 0,
             commands: Vec::new(),
         }
+    }
+
+    /// Install a camera at the given slot. Replaces any previous occupant.
+    /// Slot 0 is the conventional default; higher slots are for secondary
+    /// cameras (typical use: slot 0 = world camera, slot 1 = HUD/overlay).
+    pub fn set_camera(&mut self, slot: u32, camera: Box<dyn Camera>) {
+        self.cameras.insert(slot, camera);
+    }
+
+    /// Borrow the camera at `slot`, if any. Materials whose
+    /// `Binding::CameraUbo(slot)` points at a missing slot will fall back to
+    /// whatever the renderer last wrote there (or identity matrices if it
+    /// was never written) — populate the slot before registering such a
+    /// material to avoid surprises.
+    pub fn camera(&self, slot: u32) -> Option<&dyn Camera> {
+        self.cameras.get(&slot).map(|b| &**b)
     }
 
     /// Queue an object for insertion. The returned `ObjectId` is valid

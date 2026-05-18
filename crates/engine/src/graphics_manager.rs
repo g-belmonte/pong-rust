@@ -163,11 +163,17 @@ pub struct GraphicsManager {
     textured_material_handle: MaterialHandle,
 
     // ----- Camera UBO + descriptor pool (survive swapchain recreation) -----
-    camera_uniform_buffers: Vec<vk::Buffer>,
-    camera_uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    //
+    // Per-slot: each slot has `swapchain_image_count` UBO buffers (one per
+    // swapchain image). Slots are allocated lazily — on `register_material`
+    // for the slot it declares, and on `set_camera(slot, …)` for any slot a
+    // scene populates that no material samples yet. Slot 0 is created
+    // eagerly in `new` so the two built-in materials can wire up against it.
+    camera_uniform_buffers: HashMap<u32, Vec<vk::Buffer>>,
+    camera_uniform_buffers_memory: HashMap<u32, Vec<vk::DeviceMemory>>,
     descriptor_pool: vk::DescriptorPool,
-    last_camera_view: Option<Mat4>,
-    last_camera_proj: Option<Mat4>,
+    last_camera_views: HashMap<u32, Mat4>,
+    last_camera_projs: HashMap<u32, Mat4>,
 
     // ----- Registered geometry, instances, and textures (survive recreation) -----
     meshes: HashMap<MeshHandle, MeshBuffers>,
@@ -265,11 +271,18 @@ impl GraphicsManager {
         let command_pool = share::create_command_pool(&device, &queue_family);
 
         let swapchain_image_count = swapchain_stuff.swapchain_images.len();
-        let (camera_uniform_buffers, camera_uniform_buffers_memory) = share::create_uniform_buffers(
+        // Slot 0 is created eagerly so the two built-in materials (registered
+        // immediately after) have a UBO to bind. Any additional slot a game
+        // declares lands lazily inside `ensure_camera_slot`.
+        let (slot0_buffers, slot0_memories) = share::create_uniform_buffers(
             &device,
             &physical_device_memory_properties,
             swapchain_image_count,
         );
+        let mut camera_uniform_buffers: HashMap<u32, Vec<vk::Buffer>> = HashMap::new();
+        camera_uniform_buffers.insert(0, slot0_buffers);
+        let mut camera_uniform_buffers_memory: HashMap<u32, Vec<vk::DeviceMemory>> = HashMap::new();
+        camera_uniform_buffers_memory.insert(0, slot0_memories);
         let descriptor_pool = share::create_descriptor_pool(
             &device,
             swapchain_image_count,
@@ -365,8 +378,8 @@ impl GraphicsManager {
             textured_quad_index_count: unit_quad_indices.len() as u32,
             textures: HashMap::new(),
             next_texture_handle: 0,
-            last_camera_view: None,
-            last_camera_proj: None,
+            last_camera_views: HashMap::new(),
+            last_camera_projs: HashMap::new(),
 
             command_pool,
             command_buffers,
@@ -393,7 +406,7 @@ impl GraphicsManager {
             fragment_spv: include_bytes!("../shaders/spv/main.frag.spv"),
             vertex_attrs: &[VertexAttr::F32x2],
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
-            bindings: &[Binding::CameraUbo],
+            bindings: &[Binding::CameraUbo(0)],
             depth: DepthMode::Disabled,
         });
         gm.solid_material_handle = solid_handle;
@@ -407,7 +420,7 @@ impl GraphicsManager {
                 VertexAttr::F32x2,
                 VertexAttr::F32x2,
             ],
-            bindings: &[Binding::CameraUbo, Binding::Sampler2d],
+            bindings: &[Binding::CameraUbo(0), Binding::Sampler2d],
             depth: DepthMode::Disabled,
         });
         gm.textured_material_handle = textured_handle;
@@ -489,6 +502,14 @@ impl GraphicsManager {
         let handle = MaterialHandle(self.next_material_handle);
         self.next_material_handle += 1;
 
+        // Each material samples at most one camera UBO; the slot it declares
+        // picks which one. Allocate (or reuse) per-swapchain-image UBOs for
+        // that slot before we wire descriptor sets against them.
+        let camera_slot = Material::camera_slot(desc.bindings).expect(
+            "register_material: every material must declare a Binding::CameraUbo(slot)",
+        );
+        self.ensure_camera_slot(camera_slot);
+
         let descriptor_set_layout =
             create_material_descriptor_set_layout(&self.device, desc.bindings);
         let (pipeline, pipeline_layout, vertex_stride, instance_stride) = create_material_pipeline(
@@ -531,7 +552,7 @@ impl GraphicsManager {
                 &self.device,
                 self.descriptor_pool,
                 descriptor_set_layout,
-                &self.camera_uniform_buffers,
+                &self.camera_uniform_buffers[&camera_slot],
             )
         };
 
@@ -550,6 +571,7 @@ impl GraphicsManager {
                 instance_stride,
                 extra_size,
                 depth: desc.depth,
+                camera_slot,
                 descriptor_set_layout,
                 pipeline_layout,
                 pipeline,
@@ -644,18 +666,23 @@ impl GraphicsManager {
         }
 
         // Lazily allocate (material, texture) descriptor sets the first time
-        // we see this pairing.
+        // we see this pairing. The camera UBO bound at descriptor binding 0
+        // is the one for this material's declared camera slot.
         if let Some(t) = texture {
             let tex = self
                 .textures
                 .get(&t)
                 .expect("register_material_instance: unknown TextureHandle");
             if !mat.texture_descriptor_sets.contains_key(&t) {
+                let camera_buffers = self
+                    .camera_uniform_buffers
+                    .get(&mat.camera_slot)
+                    .expect("register_material_instance: material's camera slot was not initialised");
                 let sets = allocate_textured_descriptor_sets(
                     &self.device,
                     self.descriptor_pool,
                     mat.descriptor_set_layout,
-                    &self.camera_uniform_buffers,
+                    camera_buffers,
                     tex.view,
                     tex.sampler,
                 );
@@ -812,15 +839,42 @@ impl GraphicsManager {
         }
     }
 
-    /// Push the active camera's matrices to the shared UBOs. Accepts any
-    /// `&dyn Camera`; cache-checked so a static camera (Pong) only pays
-    /// `device_wait_idle` once.
-    pub fn set_camera(&mut self, camera: &dyn Camera) {
+    /// Lazily allocate the per-swapchain-image UBO buffers for the given
+    /// camera slot, plus a per-slot empty cache entry. Idempotent: returns
+    /// immediately if the slot already exists. Called from `register_material`
+    /// (for the slot the material samples) and from `set_camera` (for any
+    /// slot a scene populates that no material samples yet).
+    fn ensure_camera_slot(&mut self, slot: u32) {
+        if self.camera_uniform_buffers.contains_key(&slot) {
+            return;
+        }
+        let swapchain_image_count = self.swapchain_images.len();
+        let (buffers, memories) = share::create_uniform_buffers(
+            &self.device,
+            &self.physical_device_memory_properties,
+            swapchain_image_count,
+        );
+        self.camera_uniform_buffers.insert(slot, buffers);
+        self.camera_uniform_buffers_memory.insert(slot, memories);
+    }
+
+    /// Push `camera`'s matrices into the UBOs for the given slot. The App
+    /// calls this once per populated `Scene::cameras` slot per frame.
+    /// Cache-checked per slot, so a static camera in any slot only pays the
+    /// `device_wait_idle` cost the first time it changes.
+    pub fn set_camera(&mut self, slot: u32, camera: &dyn Camera) {
+        // A scene might set_camera a slot that no material samples (e.g. a
+        // future toggle between cameras). Allocate UBOs for it so the write
+        // below has somewhere to land.
+        self.ensure_camera_slot(slot);
+
         let aspect =
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
         let view = camera.view();
         let proj = camera.proj(aspect);
-        if self.last_camera_view == Some(view) && self.last_camera_proj == Some(proj) {
+        if self.last_camera_views.get(&slot) == Some(&view)
+            && self.last_camera_projs.get(&slot) == Some(&proj)
+        {
             return;
         }
         unsafe {
@@ -830,12 +884,12 @@ impl GraphicsManager {
         }
         write_camera_ubos(
             &self.device,
-            &self.camera_uniform_buffers_memory,
+            &self.camera_uniform_buffers_memory[&slot],
             view,
             proj,
         );
-        self.last_camera_view = Some(view);
-        self.last_camera_proj = Some(proj);
+        self.last_camera_views.insert(slot, view);
+        self.last_camera_projs.insert(slot, proj);
     }
 
     pub fn draw_frame(&mut self, transforms: &[(ModelHandle, Mat4)]) {
@@ -1120,8 +1174,10 @@ impl GraphicsManager {
                 share::create_render_finished_semaphores(&self.device, new_image_count);
         }
 
-        self.last_camera_view = None;
-        self.last_camera_proj = None;
+        // Invalidate every slot's cached matrices so the next per-slot
+        // `set_camera` writes fresh UBOs against the new aspect.
+        self.last_camera_views.clear();
+        self.last_camera_projs.clear();
 
         self.swapchain_imageviews =
             share::create_image_views(&self.device, self.swapchain_format, &self.swapchain_images);
@@ -1492,11 +1548,18 @@ impl Drop for GraphicsManager {
 
             self.device
                 .destroy_descriptor_pool(self.descriptor_pool, None);
-            for i in 0..self.camera_uniform_buffers.len() {
-                self.device
-                    .destroy_buffer(self.camera_uniform_buffers[i], None);
-                self.device
-                    .free_memory(self.camera_uniform_buffers_memory[i], None);
+            // Tear down per-slot camera UBO buffers + memories. The descriptor
+            // sets allocated against these were already freed when the
+            // descriptor pool went away.
+            for buffers in self.camera_uniform_buffers.values() {
+                for &b in buffers {
+                    self.device.destroy_buffer(b, None);
+                }
+            }
+            for memories in self.camera_uniform_buffers_memory.values() {
+                for &m in memories {
+                    self.device.free_memory(m, None);
+                }
             }
 
             self.device.destroy_command_pool(self.command_pool, None);
