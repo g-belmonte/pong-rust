@@ -73,7 +73,7 @@ mod color {
 /// Build the initial scene. Handed to `engine::app::App::with_scene`.
 pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
     let mut scene = Scene::new();
-    scene.camera = Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT);
+    scene.camera = Box::new(Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT));
 
     // Shared resources. Their RAII wrappers move into PhaseController below
     // so they outlive every instance built against them.

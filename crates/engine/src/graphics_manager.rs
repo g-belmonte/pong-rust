@@ -12,20 +12,20 @@ use glam::Mat4;
 use constants::*;
 use structures::{QueueFamilyIndices, SurfaceStuff};
 
-use crate::camera::Camera2D;
+use crate::camera::Camera;
 
 use ash::vk;
 
 use std::collections::HashMap;
 use std::ptr;
 
-pub use self::material::{Binding, MaterialDesc, MaterialHandle, VertexAttr};
+pub use self::material::{Binding, DepthMode, MaterialDesc, MaterialHandle, VertexAttr};
 use self::material::{
     allocate_camera_descriptor_sets, allocate_textured_descriptor_sets,
     create_descriptor_set_layout as create_material_descriptor_set_layout,
     create_pipeline as create_material_pipeline, Material, MAX_INSTANCES_PER_MATERIAL,
 };
-use self::structures::{ModelMesh, TexturedVertex, UniformBufferObject};
+use self::structures::{ModelMesh, UniformBufferObject};
 
 // Two distinct handle types: MeshHandle identifies a piece of geometry that
 // can be reused across many instances; ModelHandle identifies a single
@@ -139,6 +139,14 @@ pub struct GraphicsManager {
     swapchain_imageviews: Vec<vk::ImageView>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
 
+    // ----- Depth attachment (rebuilt on resize). One shared depth image
+    // referenced by every framebuffer; cross-frame writes are serialised by
+    // the render pass's external→subpass-0 dependency on the depth stages.
+    depth_format: vk::Format,
+    depth_image: vk::Image,
+    depth_image_memory: vk::DeviceMemory,
+    depth_image_view: vk::ImageView,
+
     // ----- Render pass (survives recreation unless swapchain format changes) -----
     render_pass: vk::RenderPass,
     pipeline_cache: vk::PipelineCache,
@@ -237,12 +245,21 @@ impl GraphicsManager {
             swapchain_stuff.swapchain_format,
             &swapchain_stuff.swapchain_images,
         );
-        let render_pass = share::create_render_pass(&device, swapchain_stuff.swapchain_format);
+        let depth_format = share::pick_depth_format(&instance, physical_device);
+        let render_pass =
+            share::create_render_pass(&device, swapchain_stuff.swapchain_format, depth_format);
         let pipeline_cache = create_pipeline_cache(&device);
+        let (depth_image, depth_image_memory, depth_image_view) = share::create_depth_attachment(
+            &device,
+            &physical_device_memory_properties,
+            depth_format,
+            swapchain_stuff.swapchain_extent,
+        );
         let swapchain_framebuffers = share::create_framebuffers(
             &device,
             render_pass,
             &swapchain_imageviews,
+            depth_image_view,
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = share::create_command_pool(&device, &queue_family);
@@ -261,12 +278,14 @@ impl GraphicsManager {
         );
 
         // Shared unit-quad VBO/IBO. Used by every sampler-using material's
-        // instances; non-sampler materials bring their own meshes.
-        let unit_quad_vertices: [TexturedVertex; 4] = [
-            TexturedVertex { pos: [-0.5, -0.5] },
-            TexturedVertex { pos: [ 0.5, -0.5] },
-            TexturedVertex { pos: [ 0.5,  0.5] },
-            TexturedVertex { pos: [-0.5,  0.5] },
+        // instances; non-sampler materials bring their own meshes. Layout is
+        // `vec2 pos` per vertex (matches the textured material's
+        // `vertex_attrs: [F32x2]`).
+        let unit_quad_positions: [[f32; 2]; 4] = [
+            [-0.5, -0.5],
+            [ 0.5, -0.5],
+            [ 0.5,  0.5],
+            [-0.5,  0.5],
         ];
         let unit_quad_indices: [u32; 6] = [0, 1, 2, 2, 3, 0];
         let (textured_quad_vertex_buffer, textured_quad_vertex_memory) =
@@ -275,7 +294,7 @@ impl GraphicsManager {
                 &physical_device_memory_properties,
                 command_pool,
                 graphics_queue,
-                &unit_quad_vertices,
+                &unit_quad_positions,
             );
         let (textured_quad_index_buffer, textured_quad_index_memory) =
             share::create_index_buffer(
@@ -316,6 +335,11 @@ impl GraphicsManager {
             swapchain_extent: swapchain_stuff.swapchain_extent,
             swapchain_imageviews,
             swapchain_framebuffers,
+
+            depth_format,
+            depth_image,
+            depth_image_memory,
+            depth_image_view,
 
             render_pass,
             pipeline_cache,
@@ -358,16 +382,19 @@ impl GraphicsManager {
             hot_reload: hot_reload::HotReload::try_new(&hot_reload::engine_spv_dir()),
         };
 
-        // Built-in materials. Order matters: the solid material is registered
-        // first so its draws occur before textured ones in `draw_frame` —
-        // important because the render pass has no depth attachment and the
-        // pipelines don't blend, so command order is paint order.
+        // Built-in materials. Both run depth-disabled — the render pass now
+        // always has a depth attachment, but Pong layered everything via
+        // material registration order before depth existed and games still
+        // depend on that contract for HUDs / overlays. Order matters: solid
+        // registers first, so its draws land before textured ones in
+        // `draw_frame`.
         let solid_handle = gm.register_material(&MaterialDesc {
             vertex_spv: include_bytes!("../shaders/spv/main.vert.spv"),
             fragment_spv: include_bytes!("../shaders/spv/main.frag.spv"),
             vertex_attrs: &[VertexAttr::F32x2],
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
             bindings: &[Binding::CameraUbo],
+            depth: DepthMode::Disabled,
         });
         gm.solid_material_handle = solid_handle;
 
@@ -381,6 +408,7 @@ impl GraphicsManager {
                 VertexAttr::F32x2,
             ],
             bindings: &[Binding::CameraUbo, Binding::Sampler2d],
+            depth: DepthMode::Disabled,
         });
         gm.textured_material_handle = textured_handle;
 
@@ -473,6 +501,7 @@ impl GraphicsManager {
             desc.fragment_spv,
             desc.vertex_attrs,
             desc.instance_attrs,
+            desc.depth,
         );
         // Per-instance buffer: host-visible+coherent, rewritten each frame.
         let buffer_size =
@@ -520,6 +549,7 @@ impl GraphicsManager {
                 instance_attrs: desc.instance_attrs.to_vec(),
                 instance_stride,
                 extra_size,
+                depth: desc.depth,
                 descriptor_set_layout,
                 pipeline_layout,
                 pipeline,
@@ -537,12 +567,18 @@ impl GraphicsManager {
     pub(crate) fn register_mesh(&mut self, mesh: &ModelMesh) -> MeshHandle {
         let handle = MeshHandle(self.next_mesh_handle);
         self.next_mesh_handle += 1;
+        // `mesh.vertex_bytes` is a raw byte buffer; the material that draws
+        // against this mesh owns the layout via its `vertex_attrs`. Stride
+        // isn't passed to the buffer creator (the GPU only sees raw bytes),
+        // but the material's pipeline computes the binding stride from the
+        // same `vertex_attrs` so the two agree by construction.
+        let _ = mesh.vertex_stride;
         let (vertex_buffer, vertex_memory) = share::create_vertex_buffer(
             &self.device,
             &self.physical_device_memory_properties,
             self.command_pool,
             self.graphics_queue,
-            &mesh.vertices,
+            &mesh.vertex_bytes,
         );
         let (index_buffer, index_memory) = share::create_index_buffer(
             &self.device,
@@ -776,10 +812,10 @@ impl GraphicsManager {
         }
     }
 
-    /// Push the active camera's matrices to the shared UBOs. See the inline
-    /// comments in the pre-Phase-7 module documentation for the cache-checked
-    /// write strategy.
-    pub fn set_camera(&mut self, camera: &Camera2D) {
+    /// Push the active camera's matrices to the shared UBOs. Accepts any
+    /// `&dyn Camera`; cache-checked so a static camera (Pong) only pays
+    /// `device_wait_idle` once.
+    pub fn set_camera(&mut self, camera: &dyn Camera) {
         let aspect =
             self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
         let view = camera.view();
@@ -1093,8 +1129,28 @@ impl GraphicsManager {
             unsafe {
                 self.device.destroy_render_pass(self.render_pass, None);
             }
-            self.render_pass = share::create_render_pass(&self.device, self.swapchain_format);
+            self.render_pass = share::create_render_pass(
+                &self.device,
+                self.swapchain_format,
+                self.depth_format,
+            );
         }
+
+        // Rebuild the depth attachment to match the new swapchain extent.
+        unsafe {
+            self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
+            self.device.free_memory(self.depth_image_memory, None);
+        }
+        let (depth_image, depth_image_memory, depth_image_view) = share::create_depth_attachment(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.depth_format,
+            self.swapchain_extent,
+        );
+        self.depth_image = depth_image;
+        self.depth_image_memory = depth_image_memory;
+        self.depth_image_view = depth_image_view;
 
         // Rebuild every material's pipeline (viewport/scissor are baked in,
         // so a swapchain-extent change invalidates them). Descriptor set
@@ -1116,6 +1172,7 @@ impl GraphicsManager {
                 &mat.fragment_spv,
                 &mat.vertex_attrs,
                 &mat.instance_attrs,
+                mat.depth,
             );
             mat.pipeline = pipeline;
             mat.pipeline_layout = pipeline_layout;
@@ -1125,6 +1182,7 @@ impl GraphicsManager {
             &self.device,
             self.render_pass,
             &self.swapchain_imageviews,
+            self.depth_image_view,
             self.swapchain_extent,
         );
     }
@@ -1195,11 +1253,21 @@ fn record_material_command_buffer(
         ..Default::default()
     };
 
-    let clear_values = [vk::ClearValue {
-        color: vk::ClearColorValue {
-            float32: [0.0, 0.0, 0.0, 1.0],
+    // Attachment order must match `share::create_render_pass`: colour at 0,
+    // depth at 1.
+    let clear_values = [
+        vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
         },
-    }];
+        vk::ClearValue {
+            depth_stencil: vk::ClearDepthStencilValue {
+                depth: 1.0,
+                stencil: 0,
+            },
+        },
+    ];
 
     let render_pass_begin_info = vk::RenderPassBeginInfo {
         s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
@@ -1332,6 +1400,7 @@ impl GraphicsManager {
                     &mat.fragment_spv,
                     &mat.vertex_attrs,
                     &mat.instance_attrs,
+                    mat.depth,
                 )
             }));
             match result {
@@ -1376,6 +1445,9 @@ impl Drop for GraphicsManager {
             }
 
             self.cleanup_swapchain();
+            self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
+            self.device.free_memory(self.depth_image_memory, None);
             self.device.destroy_render_pass(self.render_pass, None);
 
             save_pipeline_cache(&self.device, self.pipeline_cache);

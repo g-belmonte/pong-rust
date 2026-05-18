@@ -654,7 +654,96 @@ pub fn find_memory_type(
     panic!("Failed to find suitable memory type!")
 }
 
-pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::RenderPass {
+/// Pick a supported depth format with `DEPTH_STENCIL_ATTACHMENT` optimal-tiling
+/// support. Prefers `D32_SFLOAT` (depth-only, widely supported, no stencil
+/// overhead); falls through to the stencil-bearing variants if needed.
+pub fn pick_depth_format(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::Format {
+    let candidates = [
+        vk::Format::D32_SFLOAT,
+        vk::Format::D32_SFLOAT_S8_UINT,
+        vk::Format::D24_UNORM_S8_UINT,
+    ];
+    for &f in candidates.iter() {
+        let props =
+            unsafe { instance.get_physical_device_format_properties(physical_device, f) };
+        if props
+            .optimal_tiling_features
+            .contains(vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT)
+        {
+            return f;
+        }
+    }
+    panic!("No supported depth attachment format")
+}
+
+/// Create a single depth attachment (image + memory + image view) sized to
+/// `extent`. One depth attachment is shared across all swapchain framebuffers;
+/// the render pass's external→subpass-0 dependency below serialises
+/// depth-attachment writes across frames in flight.
+pub fn create_depth_attachment(
+    device: &ash::Device,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    format: vk::Format,
+    extent: vk::Extent2D,
+) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+    let image_create_info = vk::ImageCreateInfo {
+        s_type: vk::StructureType::IMAGE_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::ImageCreateFlags::empty(),
+        image_type: vk::ImageType::TYPE_2D,
+        format,
+        extent: vk::Extent3D { width: extent.width, height: extent.height, depth: 1 },
+        mip_levels: 1,
+        array_layers: 1,
+        samples: vk::SampleCountFlags::TYPE_1,
+        tiling: vk::ImageTiling::OPTIMAL,
+        usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        sharing_mode: vk::SharingMode::EXCLUSIVE,
+        queue_family_index_count: 0,
+        p_queue_family_indices: ptr::null(),
+        initial_layout: vk::ImageLayout::UNDEFINED,
+        ..Default::default()
+    };
+    let image = unsafe {
+        device
+            .create_image(&image_create_info, None)
+            .expect("Failed to create depth image")
+    };
+    let mem_requirements = unsafe { device.get_image_memory_requirements(image) };
+    let memory_type = find_memory_type(
+        mem_requirements.memory_type_bits,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        device_memory_properties,
+    );
+    let alloc_info = vk::MemoryAllocateInfo {
+        s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
+        p_next: ptr::null(),
+        allocation_size: mem_requirements.size,
+        memory_type_index: memory_type,
+        ..Default::default()
+    };
+    let memory = unsafe {
+        device
+            .allocate_memory(&alloc_info, None)
+            .expect("Failed to allocate depth image memory")
+    };
+    unsafe {
+        device
+            .bind_image_memory(image, memory, 0)
+            .expect("Failed to bind depth image memory");
+    }
+    let view = create_image_view(device, image, format, vk::ImageAspectFlags::DEPTH, 1);
+    (image, memory, view)
+}
+
+pub fn create_render_pass(
+    device: &ash::Device,
+    surface_format: vk::Format,
+    depth_format: vk::Format,
+) -> vk::RenderPass {
     let color_attachment = vk::AttachmentDescription {
         format: surface_format,
         flags: vk::AttachmentDescriptionFlags::empty(),
@@ -667,17 +756,36 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
         ..Default::default()
     };
+    let depth_attachment = vk::AttachmentDescription {
+        format: depth_format,
+        flags: vk::AttachmentDescriptionFlags::empty(),
+        samples: vk::SampleCountFlags::TYPE_1,
+        // Clear at the start of every frame; we don't read depth after the
+        // render pass ends, so DONT_CARE the store.
+        load_op: vk::AttachmentLoadOp::CLEAR,
+        store_op: vk::AttachmentStoreOp::DONT_CARE,
+        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+        initial_layout: vk::ImageLayout::UNDEFINED,
+        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        ..Default::default()
+    };
 
     let color_attachment_ref = vk::AttachmentReference {
         attachment: 0,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         ..Default::default()
     };
+    let depth_attachment_ref = vk::AttachmentReference {
+        attachment: 1,
+        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        ..Default::default()
+    };
 
     let subpasses = [vk::SubpassDescription {
         color_attachment_count: 1,
         p_color_attachments: &color_attachment_ref,
-        p_depth_stencil_attachment: ptr::null(),
+        p_depth_stencil_attachment: &depth_attachment_ref,
         flags: vk::SubpassDescriptionFlags::empty(),
         pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
         input_attachment_count: 0,
@@ -688,15 +796,24 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         ..Default::default()
     }];
 
-    let render_pass_attachments = [color_attachment];
+    let render_pass_attachments = [color_attachment, depth_attachment];
 
+    // External-subpass dependency: serialise both colour-attachment writes
+    // and depth-attachment writes across consecutive frames in flight. One
+    // shared depth image is used across every framebuffer, so frame N+1's
+    // CLEAR must happen-after frame N's LATE_FRAGMENT_TESTS depth writes.
     let subpass_dependencies = [vk::SubpassDependency {
         src_subpass: vk::SUBPASS_EXTERNAL,
         dst_subpass: 0,
-        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        src_access_mask: vk::AccessFlags::empty(),
-        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+            | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS
+            | vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+            | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+            | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+            | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         dependency_flags: vk::DependencyFlags::empty(),
         ..Default::default()
     }];
@@ -725,12 +842,15 @@ pub fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     image_views: &[vk::ImageView],
+    depth_view: vk::ImageView,
     swapchain_extent: vk::Extent2D,
 ) -> Vec<vk::Framebuffer> {
     image_views
         .iter()
         .map(|&image_view| {
-            let attachments = [image_view];
+            // Attachment order matches `create_render_pass` —
+            // [0] colour, [1] depth.
+            let attachments = [image_view, depth_view];
 
             let framebuffer_create_info = vk::FramebufferCreateInfo {
                 s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,

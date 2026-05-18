@@ -82,20 +82,46 @@ pub enum Binding {
     Sampler2d,
 }
 
+/// Per-material depth-buffer behaviour. The engine's render pass always has a
+/// depth attachment; this enum controls how a material's pipeline interacts
+/// with it.
+///
+/// - [`DepthMode::Disabled`] — no test, no write. The right choice for 2D UI /
+///   HUD layers that should always paint on top, and for the engine's built-in
+///   solid + textured materials (they predate depth and rely on registration
+///   order for layering).
+/// - [`DepthMode::ReadOnly`] — depth test on, write off. Suits 2.5D sprites
+///   that should be occluded by 3D geometry but shouldn't themselves block
+///   what's drawn after them.
+/// - [`DepthMode::ReadWrite`] — depth test on, write on. The standard choice
+///   for opaque 3D geometry: pixels behind already-drawn geometry are culled,
+///   and this material's pixels in turn occlude later draws.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum DepthMode {
+    #[default]
+    Disabled,
+    ReadOnly,
+    ReadWrite,
+}
+
 /// Material description supplied by game code (or by the engine for its
 /// built-ins). SPIR-V bytes are copied at registration time, so callers may
 /// `include_bytes!` from a `&'static [u8]` source.
 pub struct MaterialDesc<'a> {
     pub vertex_spv: &'a [u8],
     pub fragment_spv: &'a [u8],
-    /// Per-vertex attributes at binding 0. For the engine's built-ins this is
-    /// `[F32x2]` (a 2D position) — both `Vertex` and `TexturedVertex` have the
-    /// same layout.
+    /// Per-vertex attributes at binding 0. For the engine's built-in solid +
+    /// textured materials this is `[F32x2]` (a 2D position).
     pub vertex_attrs: &'a [VertexAttr],
     /// Per-instance attributes at binding 1. **The first attribute must be
     /// [`VertexAttr::Mat4`]** — the engine writes the model matrix there.
     pub instance_attrs: &'a [VertexAttr],
     pub bindings: &'a [Binding],
+    /// Depth-buffer interaction. Defaults to [`DepthMode::Disabled`] so the
+    /// engine's built-in 2D materials (and any custom material that doesn't
+    /// care about depth) keep paint-order layering. 3D opaque materials want
+    /// [`DepthMode::ReadWrite`].
+    pub depth: DepthMode,
 }
 
 /// Internal registered material. Fields marked "rebuilt on swapchain
@@ -113,6 +139,10 @@ pub(crate) struct Material {
     /// `instance_stride - 64` — bytes the caller supplies per instance after
     /// the model matrix (which is always the first 64 bytes).
     pub(crate) extra_size: u32,
+
+    /// Depth-buffer behaviour. Threaded into `create_pipeline` on both
+    /// initial registration and `recreate_swapchain` rebuilds.
+    pub(crate) depth: DepthMode,
 
     // ----- Pipeline state (rebuilt on swapchain recreation) -----
     pub(crate) descriptor_set_layout: vk::DescriptorSetLayout,
@@ -368,6 +398,7 @@ pub(crate) fn create_pipeline(
     fragment_spv: &[u8],
     vertex_attrs: &[VertexAttr],
     instance_attrs: &[VertexAttr],
+    depth: DepthMode,
 ) -> (vk::Pipeline, vk::PipelineLayout, u32, u32) {
     let vert_shader_module = share::create_shader_module(device, vertex_spv.to_vec());
     let frag_shader_module = share::create_shader_module(device, fragment_spv.to_vec());
@@ -503,12 +534,17 @@ pub(crate) fn create_pipeline(
         reference: 0,
         ..Default::default()
     };
+    let (depth_test, depth_write) = match depth {
+        DepthMode::Disabled => (vk::FALSE, vk::FALSE),
+        DepthMode::ReadOnly => (vk::TRUE, vk::FALSE),
+        DepthMode::ReadWrite => (vk::TRUE, vk::TRUE),
+    };
     let depth_state = vk::PipelineDepthStencilStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineDepthStencilStateCreateFlags::empty(),
-        depth_test_enable: vk::FALSE,
-        depth_write_enable: vk::FALSE,
+        depth_test_enable: depth_test,
+        depth_write_enable: depth_write,
         depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
         depth_bounds_test_enable: vk::FALSE,
         stencil_test_enable: vk::FALSE,

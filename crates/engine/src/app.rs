@@ -267,7 +267,7 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
     // Resource RAII flush must happen between frames — see resources.rs for
     // why we don't do it in Drop.
     engine.resources.flush_pending(&mut engine.graphics_manager);
-    engine.graphics_manager.set_camera(&engine.scene.camera);
+    engine.graphics_manager.set_camera(&*engine.scene.camera);
     let transforms = engine.scene.collect_transforms();
     engine.graphics_manager.draw_frame(&transforms);
 

@@ -63,24 +63,46 @@ pub struct SyncObjects {
     pub inflight_fences: Vec<vk::Fence>,
 }
 
+/// Geometry buffer for one registered mesh. The vertex layout is owned by the
+/// material that draws against the mesh, not by `ModelMesh` itself —
+/// `vertex_bytes` is a raw packed buffer of per-vertex records and
+/// `vertex_stride` is the byte size of one record. `indices` is always `u32`.
+///
+/// Pre-Phase-8 this carried a typed `Vec<Vertex>` (2D positions only). Making
+/// it bytes lets the same registration path serve 2D quads, 3D cubes, lit
+/// meshes with normals + UVs, and anything else a material declares — without
+/// adding a parallel `Mesh3D` axis to every renderer API.
 #[derive(Clone)]
 pub struct ModelMesh {
-    pub vertices: Vec<Vertex>,
+    pub vertex_bytes: Vec<u8>,
+    pub vertex_stride: u32,
     pub indices: Vec<u32>,
 }
 
-/// Build an axis-aligned rectangle mesh centred on the origin.
-/// Used by every solid-colour drawable in the game (paddles, walls, digit segments).
+/// Build an axis-aligned 2D rectangle mesh centred on the origin. Vertex
+/// layout is a single `vec2` position per vertex (8 bytes), matching the
+/// built-in solid material's `vertex_attrs: [F32x2]`.
+///
+/// Used by every solid-colour drawable in Pong (paddles, walls, digit
+/// segments).
 pub fn rect_mesh(width: f32, height: f32) -> ModelMesh {
     let hw = width / 2.0;
     let hh = height / 2.0;
+    let positions: [[f32; 2]; 4] = [
+        [-hw, -hh],
+        [ hw, -hh],
+        [ hw,  hh],
+        [-hw,  hh],
+    ];
+    let mut vertex_bytes = Vec::with_capacity(positions.len() * 8);
+    for p in positions.iter() {
+        vertex_bytes.extend_from_slice(unsafe {
+            ::std::slice::from_raw_parts(p.as_ptr() as *const u8, 8)
+        });
+    }
     ModelMesh {
-        vertices: vec![
-            Vertex { pos: [-hw, -hh] },
-            Vertex { pos: [ hw, -hh] },
-            Vertex { pos: [ hw,  hh] },
-            Vertex { pos: [-hw,  hh] },
-        ],
+        vertex_bytes,
+        vertex_stride: 8,
         indices: vec![0u32, 1, 2, 2, 3, 0],
     }
 }
@@ -91,20 +113,3 @@ pub struct UniformBufferObject {
     pub view: Mat4,
     pub proj: Mat4,
 }
-
-// 2D-position vertex used by [`ModelMesh`] (built-in solid material's
-// per-vertex layout) and by the engine's shared unit-quad VBO (built-in
-// textured material's mesh). Both built-ins declare `vertex_attrs: [F32x2]`
-// in their [`MaterialDesc`](super::material::MaterialDesc), so the renderer
-// derives the matching binding/attribute descriptions from there — `Vertex`
-// itself no longer carries any descriptor-building methods.
-#[repr(C)]
-#[derive(Clone, Debug, Copy)]
-pub struct Vertex {
-    pub pos: [f32; 2],
-}
-
-/// Alias for the engine's unit-quad VBO. Identical to [`Vertex`]; kept as a
-/// distinct name because the unit quad serves the textured pipeline
-/// specifically.
-pub type TexturedVertex = Vertex;

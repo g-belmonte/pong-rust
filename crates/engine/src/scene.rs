@@ -57,7 +57,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Quat, Vec3};
 
 use crate::audio::AudioManager;
-use crate::camera::Camera2D;
+use crate::camera::{Camera, Camera2D};
 use crate::graphics_manager::structures::hidden_transform;
 use crate::graphics_manager::{
     GraphicsManager, MaterialHandle, MeshHandle, ModelHandle, TextureHandle,
@@ -264,10 +264,11 @@ enum SceneCommand {
 }
 
 pub struct Scene {
-    /// Active 2D camera. The renderer reads this each frame via
-    /// `GraphicsManager::set_camera`; behaviours may mutate it (e.g. follow,
-    /// shake) through `ctx.scene.camera`.
-    pub camera: Camera2D,
+    /// Active camera. The renderer reads this each frame via
+    /// `GraphicsManager::set_camera`. Defaults to a [`Camera2D`]; swap in a
+    /// [`Camera3D`](crate::camera::Camera3D) at build time for a 3D scene
+    /// (`scene.camera = Box::new(Camera3D::new(...))`).
+    pub camera: Box<dyn Camera>,
     objects: HashMap<ObjectId, Object>,
     next_id: u32,
     commands: Vec<SceneCommand>,
@@ -282,7 +283,7 @@ impl Default for Scene {
 impl Scene {
     pub fn new() -> Self {
         Self {
-            camera: Camera2D::default(),
+            camera: Box::new(Camera2D::default()),
             objects: HashMap::new(),
             next_id: 0,
             commands: Vec::new(),
