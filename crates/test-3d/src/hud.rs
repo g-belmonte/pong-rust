@@ -6,135 +6,19 @@
 //! (Camera2D), and `DepthMode::Disabled` on the HUD material guarantees the
 //! glyphs paint on top of the 3D geometry regardless of depth values.
 //!
-//! Built as a slim cousin of `crates/pong/src/text.rs` (shelf-packed font
-//! atlas → RGBA texture → per-glyph instances of a textured material). The
-//! engine doesn't ship a text subsystem yet (that's Phase 9 territory); this
-//! file inlines just enough to demonstrate the HUD path.
+//! Font baking has moved into the engine ([`engine::resources::FontAtlas`]);
+//! this file is just the multi-instance per-glyph behaviour + the
+//! HUD-textured material registration.
 
 use std::any::Any;
-use std::collections::HashMap;
 
-use engine::graphics_manager::structures::hidden_transform;
 use engine::graphics_manager::{
     Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, ModelHandle, TextureHandle,
     VertexAttr,
 };
-use engine::resources::{Resources, Texture};
+use engine::resources::{FontAtlas, Resources};
 use engine::scene::Behaviour;
 use engine::{Mat4, Vec3};
-use fontdue::{Font, FontSettings};
-
-const ATLAS_SIZE: u32 = 512;
-const ATLAS_PADDING: u32 = 1;
-
-#[derive(Clone, Copy)]
-struct GlyphInfo {
-    uv_min: [f32; 2],
-    uv_max: [f32; 2],
-    width: f32,
-    height: f32,
-    xmin: f32,
-    ymin: f32,
-    advance: f32,
-}
-
-pub struct FontAtlas {
-    pub texture: Texture,
-    glyphs: HashMap<char, GlyphInfo>,
-    ascent: f32,
-    descent: f32,
-}
-
-impl FontAtlas {
-    /// Rasterises printable ASCII at `px`, shelf-packs into an ATLAS_SIZE
-    /// RGBA8 buffer (white RGB + alpha = bitmap), uploads via the engine's
-    /// RAII texture loader.
-    pub fn build(resources: &mut Resources, gm: &mut GraphicsManager, font_bytes: &[u8], px: f32) -> Self {
-        let font = Font::from_bytes(font_bytes, FontSettings::default())
-            .expect("Failed to load HUD font");
-
-        let mut rastered: Vec<(char, fontdue::Metrics, Vec<u8>)> = Vec::new();
-        for cp in 32u32..=126 {
-            if let Some(ch) = std::char::from_u32(cp) {
-                let (metrics, bitmap) = font.rasterize(ch, px);
-                rastered.push((ch, metrics, bitmap));
-            }
-        }
-
-        let mut order: Vec<usize> = (0..rastered.len()).collect();
-        order.sort_by(|&a, &b| rastered[b].1.height.cmp(&rastered[a].1.height));
-
-        let mut atlas = vec![0u8; (ATLAS_SIZE * ATLAS_SIZE * 4) as usize];
-        let mut origin: HashMap<char, (u32, u32)> = HashMap::new();
-
-        let mut shelf_x: u32 = 0;
-        let mut shelf_y: u32 = 0;
-        let mut shelf_h: u32 = 0;
-        for &i in &order {
-            let (ch, metrics, _) = &rastered[i];
-            let w = metrics.width as u32;
-            let h = metrics.height as u32;
-            if w == 0 || h == 0 {
-                origin.insert(*ch, (0, 0));
-                continue;
-            }
-            if shelf_x + w + ATLAS_PADDING > ATLAS_SIZE {
-                shelf_y += shelf_h + ATLAS_PADDING;
-                shelf_x = 0;
-                shelf_h = 0;
-            }
-            assert!(
-                shelf_y + h <= ATLAS_SIZE,
-                "HUD font atlas too small at {px}px"
-            );
-            origin.insert(*ch, (shelf_x, shelf_y));
-            shelf_x += w + ATLAS_PADDING;
-            shelf_h = shelf_h.max(h);
-        }
-
-        for (ch, metrics, bitmap) in &rastered {
-            if metrics.width == 0 || metrics.height == 0 {
-                continue;
-            }
-            let (ax, ay) = origin[ch];
-            for row in 0..metrics.height {
-                for col in 0..metrics.width {
-                    let alpha = bitmap[row * metrics.width + col];
-                    let dst = ((ay as usize + row) * ATLAS_SIZE as usize + (ax as usize + col)) * 4;
-                    atlas[dst] = 255;
-                    atlas[dst + 1] = 255;
-                    atlas[dst + 2] = 255;
-                    atlas[dst + 3] = alpha;
-                }
-            }
-        }
-
-        let texture = resources.load_texture_rgba(gm, ATLAS_SIZE, ATLAS_SIZE, &atlas);
-
-        let mut glyphs = HashMap::new();
-        let s = ATLAS_SIZE as f32;
-        for (ch, metrics, _) in &rastered {
-            let (ax, ay) = origin[ch];
-            let w = metrics.width as f32;
-            let h = metrics.height as f32;
-            glyphs.insert(*ch, GlyphInfo {
-                uv_min: [ax as f32 / s, ay as f32 / s],
-                uv_max: [(ax as f32 + w) / s, (ay as f32 + h) / s],
-                width: w,
-                height: h,
-                xmin: metrics.xmin as f32,
-                ymin: metrics.ymin as f32,
-                advance: metrics.advance_width,
-            });
-        }
-
-        let lm = font
-            .horizontal_line_metrics(px)
-            .expect("font has no horizontal line metrics");
-
-        FontAtlas { texture, glyphs, ascent: lm.ascent, descent: lm.descent }
-    }
-}
 
 /// Register a HUD-textured material: same shaders as the engine's built-in
 /// textured material, but sampling **camera slot 1** and running
@@ -162,10 +46,11 @@ struct GlyphInstance {
     world_size: (f32, f32),
 }
 
-/// Multi-instance label, painted with `hud_material` against `atlas_texture`.
-/// `scale` converts atlas pixels to HUD world units (Camera2D in slot 1).
+/// Multi-instance label painted with `hud_material` against `atlas.texture`.
+/// `scale` converts atlas pixels to HUD world units (the Camera2D in slot 1
+/// uses `half_height = 1`, so HUD-world Y ∈ [-1, 1]).
 pub struct HudLabelBehaviour {
-    // Hold the RAII Texture so the atlas outlives every glyph instance.
+    // Hold the RAII atlas so its texture outlives every glyph instance below.
     _atlas: FontAtlas,
     glyphs: Vec<GlyphInstance>,
 }
@@ -253,10 +138,6 @@ impl Behaviour for HudLabelBehaviour {
                 * Mat4::from_scale(Vec3::new(g.world_size.0, g.world_size.1, 1.0));
             out.push((g.handle, m));
         }
-        // No visibility toggle — the HUD label in this demo is always on.
-        // The hidden-transform helper is imported for parity with Pong's
-        // text.rs; uncomment if the demo grows a toggle.
-        let _ = hidden_transform;
     }
 
     fn on_despawn(&mut self, gm: &mut GraphicsManager) {

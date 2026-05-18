@@ -1,4 +1,5 @@
-//! Resource management: RAII handles for meshes and textures.
+//! Resource management: RAII handles for meshes and textures, plus content
+//! loaders (font atlases, OBJ / glTF meshes).
 //!
 //! Game code talks to [`Resources`] instead of calling the renderer's
 //! `register_*` methods directly. Loaders return owning wrappers ([`Mesh`],
@@ -10,6 +11,18 @@
 //! via `handle()` so callers can still register instances against them through
 //! [`GraphicsManager::register_instance`] / `register_textured_instance` —
 //! instances are not RAII (see ARCHITECTURE.md Phase 2 for that ownership).
+//!
+//! Content loaders ([`Resources::load_font`], [`Resources::load_obj`],
+//! [`Resources::load_gltf`]) parse asset bytes and produce engine types
+//! (RAII handles, [`FontAtlas`], [`MeshData`]). The OBJ + glTF loaders are
+//! gated behind the `obj` / `gltf` Cargo features so games that don't need
+//! them pay zero dep cost.
+
+pub mod font;
+pub mod model;
+
+pub use font::{FontAtlas, GlyphInfo};
+pub use model::{pack_lit_vertices, MeshData};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -109,6 +122,61 @@ impl Resources {
     /// is required since audio is independent of the renderer.
     pub fn load_sound(&self, bytes: &[u8]) -> Sound {
         Sound::from_bytes(bytes).expect("Resources::load_sound: failed to decode audio bytes")
+    }
+
+    /// Bake a font atlas: rasterise printable ASCII at `px`, shelf-pack into
+    /// an RGBA8 texture (white RGB + alpha = bitmap mask, fragment-shader
+    /// `discard` handles the masking), upload, and return a [`FontAtlas`]
+    /// with the RAII texture + glyph metadata. See [`font::FontAtlas`].
+    pub fn load_font(&mut self, gm: &mut GraphicsManager, bytes: &[u8], px: f32) -> FontAtlas {
+        FontAtlas::build(self, gm, bytes, px)
+    }
+
+    /// Parse a Wavefront OBJ blob into per-attribute [`MeshData`] arrays
+    /// (one entry per object/group in the file, in declaration order).
+    /// Generates smoothed vertex normals if the file omits them; fills UVs
+    /// with `(0, 0)` if absent. Low-level: doesn't touch the renderer. Pair
+    /// with [`pack_lit_vertices`] + [`Self::load_mesh`] for a custom vertex
+    /// layout, or call [`Self::load_obj`] for the high-level path.
+    #[cfg(feature = "obj")]
+    pub fn load_obj_data(&self, bytes: &[u8]) -> Vec<MeshData> {
+        model::parse_obj(bytes)
+    }
+
+    /// Parse OBJ bytes, pack each sub-mesh into the engine's lit vertex
+    /// layout (`pos + normal + uv`, stride 32), register against the
+    /// renderer, return RAII [`Mesh`] handles. The returned meshes are
+    /// ready to draw against any material declaring
+    /// `vertex_attrs: [F32x3, F32x3, F32x2]` (e.g. test-3d's lit material).
+    #[cfg(feature = "obj")]
+    pub fn load_obj(&mut self, gm: &mut GraphicsManager, bytes: &[u8]) -> Vec<Mesh> {
+        model::parse_obj(bytes)
+            .iter()
+            .map(|d| self.load_mesh(gm, &pack_lit_vertices(d)))
+            .collect()
+    }
+
+    /// Parse a glTF blob into per-primitive [`MeshData`] arrays — one entry
+    /// per primitive across all meshes, in declaration order. Generates
+    /// smoothed vertex normals if a primitive omits them; fills UVs with
+    /// `(0, 0)` if absent. **Only `.glb` and `.gltf` with embedded data URI
+    /// buffers are supported** — `.gltf` with external `.bin` files panics
+    /// with a clear message (the loader has no filesystem context to
+    /// resolve URIs).
+    #[cfg(feature = "gltf")]
+    pub fn load_gltf_data(&self, bytes: &[u8]) -> Vec<MeshData> {
+        model::parse_gltf(bytes)
+    }
+
+    /// High-level glTF loader: parse, pack into the lit vertex layout,
+    /// register, return RAII [`Mesh`] handles. See [`Self::load_gltf_data`]
+    /// for the supported-format caveats.
+    #[cfg(feature = "gltf")]
+    pub fn load_gltf(&mut self, gm: &mut GraphicsManager, bytes: &[u8]) -> Vec<Mesh> {
+        model::parse_gltf(bytes)
+            .iter()
+            .map(|d| self.load_mesh(gm, &pack_lit_vertices(d)))
+            .collect()
     }
 
     /// Drain any queued resource destroys. Must be called at a point where the

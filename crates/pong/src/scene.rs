@@ -24,7 +24,7 @@ use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
 use crate::paddle::PaddleBehaviour;
 use crate::phase::PhaseController;
-use crate::text::{FontAtlas, TextLabelBehaviour};
+use crate::text::TextLabelBehaviour;
 use crate::wall::WallBehaviour;
 
 const PADDLE_HEIGHT: f32 = 2.0;
@@ -80,7 +80,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     let paddle_mesh = resources.load_mesh(gm, &rect_mesh(PADDLE_WIDTH, PADDLE_HEIGHT));
     let wall_mesh = resources.load_mesh(gm, &rect_mesh(WALL_WIDTH, WALL_HEIGHT));
     let digit_meshes = DigitMeshes::load(resources, gm, DIGIT_SEGMENT_SIZE);
-    let font_atlas = FontAtlas::build(resources, gm, FONT_BYTES, FONT_RASTER_PX);
+    let font_atlas = resources.load_font(gm, FONT_BYTES, FONT_RASTER_PX);
 
     // Sound assets: cheap to clone (kira's StaticSoundData is Arc-backed).
     // Ball owns the bounce clones; PhaseController owns the score/end clones.

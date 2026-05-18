@@ -16,6 +16,7 @@ use std::any::Any;
 use std::f32::consts::TAU;
 
 use engine::camera::{Camera2D, Camera3D};
+#[cfg(not(feature = "obj"))]
 use engine::graphics_manager::structures::ModelMesh;
 use engine::graphics_manager::{
     Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
@@ -25,7 +26,7 @@ use engine::resources::{Mesh, Resources};
 use engine::scene::{Behaviour, Object, Renderable, Scene, Transform, UpdateCtx};
 use engine::{Quat, Vec2, Vec3};
 
-use crate::hud::{FontAtlas, HudLabelBehaviour};
+use crate::hud::HudLabelBehaviour;
 
 /// Cube colour (RGB, linear). Modulated per-fragment by Lambertian shading
 /// against the lit shader's hardcoded directional light.
@@ -89,7 +90,20 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
         },
     );
 
+    // Hand-rolled cube by default; the `obj` Cargo feature switches to
+    // loading the same geometry from `assets/cube.obj` via the engine's
+    // OBJ loader (smoke-test for `Resources::load_obj`).
+    #[cfg(not(feature = "obj"))]
     let cube_mesh = resources.load_mesh(gm, &cube_mesh());
+    #[cfg(feature = "obj")]
+    let cube_mesh = {
+        let bytes = include_bytes!("../assets/cube.obj");
+        resources
+            .load_obj(gm, bytes)
+            .into_iter()
+            .next()
+            .expect("cube.obj produced no meshes")
+    };
 
     scene.spawn(
         Object::new()
@@ -118,7 +132,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     // its own — `HudLabelBehaviour` owns the per-glyph instances and
     // contributes them via `collect_renderables`.
     let hud_material = crate::hud::register_hud_material(resources, gm);
-    let atlas = FontAtlas::build(resources, gm, HUD_FONT_BYTES, HUD_FONT_PX);
+    let atlas = resources.load_font(gm, HUD_FONT_BYTES, HUD_FONT_PX);
     scene.spawn(
         Object::new()
             .with_position(HUD_TEXT_POSITION)
@@ -173,6 +187,7 @@ impl Behaviour for Spinner {
 /// Build a unit cube centred at the origin with per-face normals. Vertex
 /// layout matches the lit material: `pos: vec3, normal: vec3, uv: vec2` =
 /// 32 bytes per vertex. 24 vertices (4 per face × 6 faces), 36 indices.
+#[cfg(not(feature = "obj"))]
 fn cube_mesh() -> ModelMesh {
     // Six faces, each as (normal, four corner positions in CW winding when
     // looked at from outside, four corner UVs).

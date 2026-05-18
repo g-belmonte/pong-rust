@@ -17,7 +17,8 @@ use engine::scene::{Behaviour, ObjectId, UpdateCtx};
 use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
 use crate::paddle::PaddleBehaviour;
-use crate::text::{FontAtlas, TextLabelBehaviour};
+use crate::text::TextLabelBehaviour;
+use engine::resources::FontAtlas;
 
 #[derive(PartialEq)]
 pub enum GamePhase {

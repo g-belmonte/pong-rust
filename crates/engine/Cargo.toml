@@ -8,6 +8,10 @@ default = []
 # Watch `crates/engine/shaders/spv/` and rebuild built-in material pipelines
 # when the SPV bytes change on disk. Dev iteration only; off in release.
 hot-reload = ["dep:notify"]
+# Wavefront OBJ mesh loader (Resources::load_obj / load_obj_data).
+obj = ["dep:tobj"]
+# glTF 2.0 mesh loader, GLB-only (Resources::load_gltf / load_gltf_data).
+gltf = ["dep:gltf"]
 
 [dependencies]
 winit             = "0.30"
@@ -20,7 +24,10 @@ image             = { version = "0.23", default-features = false, features = ["p
 num               = "0.2"
 dirs              = "5"
 kira              = { version = "0.12", default-features = false, features = ["cpal", "mp3"] }
+fontdue           = "0.7"
 notify            = { version = "6", optional = true }
+tobj              = { version = "4", optional = true, default-features = false }
+gltf              = { version = "1", optional = true, default-features = false, features = ["utils"] }
 
 [dependencies.bitflags]
 version = ">= 1.0.4"

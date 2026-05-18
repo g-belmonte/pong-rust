@@ -3,6 +3,11 @@ name = "test-3d"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Proxy features: turn on the matching engine loader.
+obj  = ["engine/obj"]
+gltf = ["engine/gltf"]
+
 [dependencies]
-engine  = { path = "../engine" }
-fontdue = "0.7"
+engine = { path = "../engine" }

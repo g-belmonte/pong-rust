@@ -14,4 +14,3 @@ hot-reload = ["engine/hot-reload"]
 engine  = { path = "../engine" }
 num     = "0.2"
 rand    = "0.8.5"
-fontdue = "0.7"
