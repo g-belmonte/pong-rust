@@ -55,47 +55,26 @@ impl TintedTextLabelBehaviour {
         color: [f32; 3],
         visible: bool,
     ) -> Self {
-        let total_advance: f32 = text
-            .chars()
-            .filter_map(|ch| atlas.glyphs.get(&ch))
-            .map(|g| g.advance)
-            .sum();
-
-        let baseline_y_local = (atlas.ascent + atlas.descent) / 2.0;
-        let mut pen_x = -total_advance / 2.0;
-
-        let mut glyphs = Vec::new();
-        for ch in text.chars() {
-            let g = match atlas.glyphs.get(&ch) {
-                Some(g) => *g,
-                None => continue,
-            };
-            if g.width > 0.0 && g.height > 0.0 {
-                let tlx = (pen_x + g.xmin) * scale;
-                let tly = (baseline_y_local - (g.ymin + g.height)) * scale;
-                let w = g.width * scale;
-                let h = g.height * scale;
-                let uv_offset = g.uv_min;
-                let uv_scale = [g.uv_max[0] - g.uv_min[0], g.uv_max[1] - g.uv_min[1]];
-                let extra = pack_extra(uv_offset, uv_scale, color);
-                let handle = gm.register_material_instance(
-                    material,
-                    None,
-                    Some(atlas.texture.handle()),
-                    &extra,
-                );
-                glyphs.push(GlyphInstance {
-                    handle,
-                    local_offset: Vec3::new(tlx + w * 0.5, tly + h * 0.5, 0.0),
-                    world_size: (w, h),
-                    uv_offset,
-                    uv_scale,
-                });
-            }
-            pen_x += g.advance;
-        }
-
+        let glyphs = layout_and_register(gm, atlas, material, text, scale, color);
         Self { glyphs, color, visible }
+    }
+
+    /// Replace the displayed text. Unregisters the existing glyph instances
+    /// and registers a fresh set against the supplied material + atlas, with
+    /// the current tint colour preserved. Used by `SettingsController` to
+    /// rebuild a value row's label ("< 9 >" → "< 8 >") on adjustment edges.
+    pub fn set_text(
+        &mut self,
+        gm: &mut GraphicsManager,
+        atlas: &FontAtlas,
+        material: MaterialHandle,
+        text: &str,
+        scale: f32,
+    ) {
+        for g in &self.glyphs {
+            gm.unregister_instance(g.handle);
+        }
+        self.glyphs = layout_and_register(gm, atlas, material, text, scale, self.color);
     }
 
     /// Update the tint applied to every glyph. No-op if `color` matches the
@@ -111,10 +90,59 @@ impl TintedTextLabelBehaviour {
         }
     }
 
-    #[allow(dead_code)] // Public surface used by future menus (e.g. Settings).
+    #[allow(dead_code)] // Public surface used by future menus.
     pub fn set_visible(&mut self, visible: bool) {
         self.visible = visible;
     }
+}
+
+/// Glyph layout + registration loop, shared by `new` and `set_text`. Same
+/// per-glyph maths as the original constructor; extracted so changing one
+/// path doesn't drift from the other.
+fn layout_and_register(
+    gm: &mut GraphicsManager,
+    atlas: &FontAtlas,
+    material: MaterialHandle,
+    text: &str,
+    scale: f32,
+    color: [f32; 3],
+) -> Vec<GlyphInstance> {
+    let total_advance: f32 = text
+        .chars()
+        .filter_map(|ch| atlas.glyphs.get(&ch))
+        .map(|g| g.advance)
+        .sum();
+
+    let baseline_y_local = (atlas.ascent + atlas.descent) / 2.0;
+    let mut pen_x = -total_advance / 2.0;
+
+    let mut glyphs = Vec::new();
+    for ch in text.chars() {
+        let g = match atlas.glyphs.get(&ch) {
+            Some(g) => *g,
+            None => continue,
+        };
+        if g.width > 0.0 && g.height > 0.0 {
+            let tlx = (pen_x + g.xmin) * scale;
+            let tly = (baseline_y_local - (g.ymin + g.height)) * scale;
+            let w = g.width * scale;
+            let h = g.height * scale;
+            let uv_offset = g.uv_min;
+            let uv_scale = [g.uv_max[0] - g.uv_min[0], g.uv_max[1] - g.uv_min[1]];
+            let extra = pack_extra(uv_offset, uv_scale, color);
+            let handle =
+                gm.register_material_instance(material, None, Some(atlas.texture.handle()), &extra);
+            glyphs.push(GlyphInstance {
+                handle,
+                local_offset: Vec3::new(tlx + w * 0.5, tly + h * 0.5, 0.0),
+                world_size: (w, h),
+                uv_offset,
+                uv_scale,
+            });
+        }
+        pen_x += g.advance;
+    }
+    glyphs
 }
 
 impl Behaviour for TintedTextLabelBehaviour {

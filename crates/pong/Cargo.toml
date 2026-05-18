@@ -11,6 +11,10 @@ default = []
 hot-reload = ["engine/hot-reload"]
 
 [dependencies]
-engine  = { path = "../engine" }
-num     = "0.2"
-rand    = "0.8.5"
+engine     = { path = "../engine" }
+num        = "0.2"
+rand       = "0.8.5"
+# Settings persistence: JSON at `dirs::config_dir()/pong-rust/settings.json`.
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs       = "5"

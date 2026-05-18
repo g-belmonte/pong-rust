@@ -15,6 +15,8 @@
 //! scene and back without any GPU re-upload.
 
 use std::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use engine::camera::Camera2D;
 use engine::graphics_manager::{
@@ -26,6 +28,8 @@ use engine::scene::{Behaviour, Object, ObjectId, Scene, Transform, UpdateCtx};
 use engine::{Vec2, Vec3};
 
 use crate::scene_game;
+use crate::scene_settings;
+use crate::settings::Settings;
 use crate::tinted_text::TintedTextLabelBehaviour;
 
 const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
@@ -45,13 +49,19 @@ const COLOR_GREY: [f32; 3] = [0.45, 0.45, 0.45];
 const CAMERA_HALF_HEIGHT: f32 = 4.142;
 
 const TITLE_Y: f32 = -2.4;
-const OPTION_TEXTS: [&str; 2] = ["Play", "Quit"];
-const OPTION_Y: [f32; 2] = [-0.3, 1.0];
+const OPTION_TEXTS: [&str; 3] = ["Play", "Settings", "Quit"];
+const OPTION_Y: [f32; 3] = [-0.6, 0.4, 1.4];
 
 /// Register the tinted-text material. Shaders ship as SPIR-V under
 /// `crates/pong/shaders/spv/`; recompile via `scripts/compile-shaders.sh
 /// crates/pong/shaders/src crates/pong/shaders/spv`.
-fn register_tinted_text_material(
+///
+/// Idempotent across scenes thanks to the engine's material identity: pong
+/// re-registers it in every scene that needs tinted text (menu, settings).
+/// Each `register_material` returns a new handle, but the underlying pipeline
+/// is identical — fine for our scale. A future de-duplication pass could
+/// stash one handle on the App or pass it around.
+pub(crate) fn register_tinted_text_material(
     resources: &mut Resources,
     gm: &mut GraphicsManager,
 ) -> MaterialHandle {
@@ -73,7 +83,11 @@ fn register_tinted_text_material(
     )
 }
 
-pub fn build_menu(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
+pub fn build_menu(
+    resources: &mut Resources,
+    gm: &mut GraphicsManager,
+    settings: Rc<RefCell<Settings>>,
+) -> Scene {
     let mut scene = Scene::new();
     scene.set_camera(0, Box::new(Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT)));
 
@@ -145,6 +159,7 @@ pub fn build_menu(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
         last_mouse: None,
         camera_centre: Vec2::ZERO,
         camera_half_height: CAMERA_HALF_HEIGHT,
+        settings,
         _atlas: atlas,
     }));
 
@@ -172,6 +187,10 @@ pub struct MenuController {
     last_mouse: Option<(f32, f32)>,
     camera_centre: Vec2,
     camera_half_height: f32,
+    /// Cloned into the closure handed to `ctx.request_scene` when the player
+    /// picks Play or Settings — that's how settings survive menu→game→menu
+    /// and menu→settings→menu round trips.
+    settings: Rc<RefCell<Settings>>,
     /// Kept alive so the atlas's [`engine::resources::Texture`] survives a
     /// menu→game→menu round trip — the game scene's `load_font` cache-hits
     /// against this Rc rather than re-uploading.
@@ -225,7 +244,9 @@ impl Behaviour for MenuController {
 
     fn update(&mut self, ctx: &mut UpdateCtx) {
         // Escape from the menu = exit the program. Quit option does the same.
+        // Persist settings on the way out.
         if ctx.input.was_just_pressed(KeyCode::Escape) {
+            self.settings.borrow().save();
             ctx.request_exit();
             return;
         }
@@ -268,8 +289,20 @@ impl Behaviour for MenuController {
 
         if enter || click_hits_selected {
             match self.selected {
-                0 => ctx.request_scene(scene_game::build_game),
-                1 => ctx.request_exit(),
+                0 => {
+                    let s = Rc::clone(&self.settings);
+                    ctx.request_scene(move |res, gm| scene_game::build_game(res, gm, s));
+                }
+                1 => {
+                    let s = Rc::clone(&self.settings);
+                    ctx.request_scene(move |res, gm| {
+                        scene_settings::build_settings(res, gm, s)
+                    });
+                }
+                2 => {
+                    self.settings.borrow().save();
+                    ctx.request_exit();
+                }
                 _ => {}
             }
         }

@@ -16,6 +16,9 @@
 //! move with negative-y = up, digits sit above the play field at `y ≈ -3.7`.
 //! Matches Vulkan clip-space Y and is mirrored by `digit.rs` and `text.rs`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use engine::{Vec2, Vec3};
 
 use engine::camera::Camera2D;
@@ -29,6 +32,7 @@ use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
 use crate::paddle::PaddleBehaviour;
 use crate::phase::PhaseController;
+use crate::settings::Settings;
 use crate::text::TextLabelBehaviour;
 use crate::wall::WallBehaviour;
 
@@ -43,8 +47,8 @@ const BALL_SIDE_LENGTH: f32 = 0.2;
 const WALL_OFFSET_Y: f32 = 3.2;
 // Ball's |x| past this counts as a goal — slightly outside paddle x (±4.0).
 const GOAL_LINE_X: f32 = 4.7;
-const PADDLE_SPEED: f32 = 2.0;
-const BALL_KICKOFF_SPEED_X: f32 = 4.0;
+// PADDLE_SPEED / BALL_KICKOFF_SPEED_X / WINNING_SCORE are read from Settings
+// at build time (see `build_game` below).
 
 // World-space half-height of the visible area. Chosen to preserve the
 // pre-Phase-4 perspective view: at the previous camera (z=10, fov=45°),
@@ -70,8 +74,6 @@ const PADDLE_BOUNCE_AUDIO: &[u8] = include_bytes!("../assets/hit.mp3");
 const SCORE_AUDIO: &[u8] = include_bytes!("../assets/score.mp3");
 const GAME_OVER_AUDIO: &[u8] = include_bytes!("../assets/victory.mp3");
 
-pub const WINNING_SCORE: u8 = 9;
-
 mod color {
     pub const RED: [f32; 3] = [1.0, 0.0, 0.0];
     pub const BLUE: [f32; 3] = [0.0, 0.0, 1.0];
@@ -79,8 +81,20 @@ mod color {
 }
 
 /// Build the game scene. Called the first time the player picks "Play" from
-/// the main menu, and again every time the menu re-enters the game.
-pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
+/// the main menu, and again every time the menu re-enters the game. Reads
+/// the current [`Settings`] once at build time — a match in progress is
+/// unaffected by later edits on the Settings screen.
+pub fn build_game(
+    resources: &mut Resources,
+    gm: &mut GraphicsManager,
+    settings: Rc<RefCell<Settings>>,
+) -> Scene {
+    // Snapshot at build time; ignore further mutations during this match.
+    let (winning_score, ball_kickoff_speed_x, paddle_speed) = {
+        let s = settings.borrow();
+        (s.winning_score, s.ball_speed, s.paddle_speed)
+    };
+
     let mut scene = Scene::new();
     scene.set_camera(0, Box::new(Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT)));
 
@@ -128,7 +142,7 @@ pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
             .with_behaviour(PaddleBehaviour::new(
                 PADDLE_WIDTH,
                 PADDLE_HEIGHT,
-                PADDLE_SPEED,
+                paddle_speed,
                 KeyCode::KeyW,
                 KeyCode::KeyS,
                 top_wall,
@@ -145,7 +159,7 @@ pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
             .with_behaviour(PaddleBehaviour::new(
                 PADDLE_WIDTH,
                 PADDLE_HEIGHT,
-                PADDLE_SPEED,
+                paddle_speed,
                 KeyCode::KeyI,
                 KeyCode::KeyK,
                 top_wall,
@@ -157,7 +171,7 @@ pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
         resources,
         gm,
         BALL_SIDE_LENGTH,
-        BALL_KICKOFF_SPEED_X,
+        ball_kickoff_speed_x,
         top_wall,
         bottom_wall,
         left_paddle,
@@ -238,7 +252,7 @@ pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
             welcome_label,
             game_over_label,
             game_over_controls_label,
-            WINNING_SCORE,
+            winning_score,
             GOAL_LINE_X,
             paddle_mesh,
             wall_mesh,
@@ -246,6 +260,7 @@ pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene 
             font_atlas,
             score_sfx,
             game_over_sfx,
+            settings,
         )),
     );
 
