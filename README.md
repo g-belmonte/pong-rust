@@ -4,6 +4,14 @@ Implementation of the game Pong using rust as programming language.
 
 For this project I followed the "vulkan tutorial" up to the index buffers part using `unkownue/vulkan-tutorial-rust` repository as inspiration.
 
+The project is structured in three layers:
+
+- **`engine`** — a reusable Rust game-engine library (Vulkan renderer, audio, resources, scene + behaviours, input, time, 2D + 3D cameras, depth-aware material pipelines).
+- **`pong`** — a thin application crate that uses `engine` to implement the game.
+- **`test-3d`** — a tiny smoke-test crate exercising the engine's 3D path: depth buffer, perspective camera, custom 3D lit material (`pos/normal/uv` vertex layout), plus a 2D HUD text label drawn against a second camera slot — the canonical "3D world + 2D HUD" mixed-camera demo.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design. See [CLAUDE.md](CLAUDE.md) for the current state of the code.
+
 # Getting started
 
 ## External dependencies
@@ -35,32 +43,62 @@ Tested with `rustc 1.73.0`
 
 On the root of the project, run this command:
 
-`scripts/compile-shaders.sh shaders/src shaders/spv`
+`scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv`
 
-Note: there are clearly no cleanup systems in place. It would be considered good manners to cleanup things with a friendly `rm -rf ./shaders/spv` before beginning any work.
+Note: there are clearly no cleanup systems in place. It would be considered good manners to cleanup things with a friendly `rm -rf ./crates/engine/shaders/spv` before beginning any work.
+
+## Controls
+
+The game opens on a main menu with **Play**, **Settings**, and **Quit**.
+Navigate with the mouse (hover to highlight, left-click to select) or with
+**Up / Down + Enter**. **Escape** quits from the menu.
+
+On the **Settings** screen: **Up / Down** moves between rows, **Left / Right**
+adjusts the highlighted setting (winning score 1–9, ball speed 1.0–8.0,
+paddle speed 0.5–4.0; speeds step by 0.5), **Escape** saves to disk and
+returns to the menu. Settings persist as JSON at
+`$XDG_CONFIG_HOME/pong-rust/settings.json` (or the platform equivalent —
+`~/Library/Application Support/...` on macOS, `%APPDATA%\...` on Windows)
+and load automatically on the next launch.
+
+In-game: **W / S** drive the left paddle, **I / K** drive the right paddle,
+**Space** starts a match (and replays after Game Over), **Escape** returns to
+the main menu. Settings changes take effect at the *next* Play — a match in
+progress keeps its starting values.
 
 ## Compile and run the game
 
 ### Debug/Dev profile
 
-Well, `cargo build` and `cargo run`. Not using no fancy stuff in here.
+`cargo build` (workspace) and `cargo run -p pong`.
+
+To run the 3D smoke-test instead: `cargo run -p test-3d` (one lit rotating cube under a 2D HUD label; Escape quits).
+
+The test-3d crate also has `obj` / `gltf` feature proxies that turn on the matching engine loader; running `cargo run -p test-3d --features obj` loads the cube from `crates/test-3d/assets/cube.obj` instead of the hand-rolled vertex bytes, exercising the engine's OBJ loader end-to-end.
 
 ### Release profile
 
 Same as debug, but with a `--release` flag added to the listed commands.
 
-# Wishlist
+### Shader hot-reload (dev iteration)
 
-- [ ] Add text support
-- [ ] Add "Welcome" and "Game Over" messages
-- [ ] Show score
+Run with the `hot-reload` Cargo feature to have the engine watch
+`crates/engine/shaders/spv/` and rebuild the affected built-in material's
+pipeline whenever SPV bytes change on disk:
 
-- [ ] Add main menu
-- [ ] Create configuration menu
+```sh
+cargo run -p pong --features hot-reload
+```
 
-## Things that may be added as configuration
+Workflow: edit a GLSL file under `crates/engine/shaders/src/`, run
+`scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv`
+(or hook it into your editor's on-save), and the running binary picks up the
+new shader without restart. Bad SPV bytes (e.g. a compile error producing a
+broken file) are logged to stderr and the old pipeline keeps running.
 
-- Score needed for victory
-- Paddle speed
-- Ball speed
-- Game modes
+The feature is off by default; release builds get zero overhead.
+
+# Open items
+
+- Game modes (single player vs CPU, best-of-N matches, etc.).
+- Optional: filesystem-based asset paths + hot-reload for non-shader assets.
