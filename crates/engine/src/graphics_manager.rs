@@ -468,6 +468,13 @@ impl GraphicsManager {
         };
     }
 
+    /// Current swapchain extent in physical pixels (`[width, height]`).
+    /// Useful for converting between window-space and world-space coordinates
+    /// (e.g. mouse hit-testing via [`crate::camera::Camera2D::screen_to_world`]).
+    pub fn extent(&self) -> [u32; 2] {
+        [self.swapchain_extent.width, self.swapchain_extent.height]
+    }
+
     /// Built-in solid-colour material handle. Per-instance extra payload is
     /// `[f32; 3]` (the colour).
     pub fn solid_material(&self) -> MaterialHandle {
@@ -730,6 +737,29 @@ impl GraphicsManager {
         });
         let material = self.textured_material_handle;
         self.register_material_instance(material, None, Some(texture), &bytes)
+    }
+
+    /// Replace the per-instance "extra" payload (everything after the model
+    /// matrix) for an already-registered instance. The next `draw_frame`
+    /// re-packs the instance buffer and the new bytes are picked up by the
+    /// vertex shader.
+    ///
+    /// Bytes must be exactly the size declared by the owning material's
+    /// `instance_attrs` after the leading [`VertexAttr::Mat4`]. Useful for
+    /// occasional state changes (e.g. a menu option's tint colour) without
+    /// the cost of unregister + re-register.
+    pub fn set_instance_extra(&mut self, handle: ModelHandle, extra: &[u8]) {
+        let inst = self
+            .instances
+            .get_mut(&handle)
+            .expect("set_instance_extra: unknown ModelHandle");
+        assert_eq!(
+            extra.len(),
+            inst.extra.len(),
+            "set_instance_extra: payload size mismatch (material declared {} bytes)",
+            inst.extra.len()
+        );
+        inst.extra.copy_from_slice(extra);
     }
 
     pub(crate) fn unregister_mesh(&mut self, mesh: MeshHandle) {

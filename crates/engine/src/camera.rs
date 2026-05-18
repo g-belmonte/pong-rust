@@ -60,6 +60,30 @@ impl Camera2D {
     pub fn new(centre: Vec2, half_height: f32) -> Self {
         Self { centre, half_height }
     }
+
+    /// Convert a window-pixel coordinate (top-left origin, physical pixels —
+    /// what [`crate::input::Input::mouse_position`] returns) into the
+    /// world-space coordinate this camera draws there. `extent` is the
+    /// window/swapchain size, available as
+    /// [`crate::graphics_manager::GraphicsManager::extent`].
+    ///
+    /// Useful for mouse hit-testing against world-space UI: convert the
+    /// cursor once per frame and intersect with each option's known
+    /// world-space rect.
+    pub fn screen_to_world(&self, px: f32, py: f32, extent: [u32; 2]) -> Vec2 {
+        let w = extent[0] as f32;
+        let h = extent[1] as f32;
+        // Pixel → normalised device coords. Pixel y grows downwards;
+        // Vulkan clip space y also grows downwards, so no flip.
+        let ndc_x = (px / w) * 2.0 - 1.0;
+        let ndc_y = (py / h) * 2.0 - 1.0;
+        let aspect = w / h;
+        let half_width = self.half_height * aspect;
+        Vec2::new(
+            self.centre.x + ndc_x * half_width,
+            self.centre.y + ndc_y * self.half_height,
+        )
+    }
 }
 
 impl Camera for Camera2D {

@@ -1,9 +1,14 @@
-//! Pong's scene-building function.
+//! Pong's *game* scene-building function (paddles + ball + score).
 //!
 //! Loads shared resources (meshes, textures, font atlas) and spawns every
 //! game object into the engine's `Scene`. All game state then lives in
 //! behaviours — paddles, ball, walls, digits, labels, and a `PhaseController`
 //! that owns the game-state machine and label visibility.
+//!
+//! Entered from [`crate::scene_menu::build_menu`] via the engine's
+//! [`UpdateCtx::request_scene`](engine::scene::UpdateCtx::request_scene)
+//! swap mechanism. Shared assets (font atlas, MP3s) cache-hit through
+//! [`engine::resources::Resources`] across the swap.
 //!
 //! ## Coordinate convention
 //!
@@ -53,6 +58,9 @@ const FONT_RASTER_PX: f32 = 48.0;
 // 48 px / 0.005 = 9600 px per world unit — sized so "Welcome" sits inside
 // the play field. Kept in sync with FONT_RASTER_PX.
 const FONT_WORLD_SCALE: f32 = 0.005;
+/// Multiplier applied to the parent Object's transform for the "Game Over"
+/// title so it reads bigger than the surrounding labels.
+const GAME_OVER_TITLE_SCALE: f32 = 1.8;
 
 // All four events currently share the same source file. When distinct samples
 // land, give each its own `include_bytes!` line and the rest of the wiring
@@ -70,8 +78,9 @@ mod color {
     pub const GREEN: [f32; 3] = [0.0, 1.0, 0.0];
 }
 
-/// Build the initial scene. Handed to `engine::app::App::with_scene`.
-pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
+/// Build the game scene. Called the first time the player picks "Play" from
+/// the main menu, and again every time the menu re-enters the game.
+pub fn build_game(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene {
     let mut scene = Scene::new();
     scene.set_camera(0, Box::new(Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT)));
 
@@ -192,11 +201,28 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     );
     let game_over_label = scene.spawn(
         Object::new()
-            .with_position(Vec3::new(0.0, -1.2, 0.0))
+            .with_transform(Transform {
+                position: Vec3::new(0.0, -1.5, 0.0),
+                scale: Vec3::splat(GAME_OVER_TITLE_SCALE),
+                ..Transform::default()
+            })
             .with_behaviour(TextLabelBehaviour::new(
                 gm,
                 &font_atlas,
                 "Game Over",
+                FONT_WORLD_SCALE,
+                false,
+            )),
+    );
+    // Sit below the Game Over title in the visible play field; rendered at
+    // the default FONT_WORLD_SCALE so it reads as a hint, not a header.
+    let game_over_controls_label = scene.spawn(
+        Object::new()
+            .with_position(Vec3::new(0.0, -0.4, 0.0))
+            .with_behaviour(TextLabelBehaviour::new(
+                gm,
+                &font_atlas,
+                "SPACE replay     ESC menu",
                 FONT_WORLD_SCALE,
                 false,
             )),
@@ -211,6 +237,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
             right_digit,
             welcome_label,
             game_over_label,
+            game_over_controls_label,
             WINNING_SCORE,
             GOAL_LINE_X,
             paddle_mesh,

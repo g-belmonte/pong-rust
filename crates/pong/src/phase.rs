@@ -42,6 +42,8 @@ pub struct PhaseController {
     right_digit: ObjectId,
     welcome_label: ObjectId,
     game_over_label: ObjectId,
+    /// Smaller line shown only in the End phase: "SPACE replay   ESC menu".
+    game_over_controls_label: ObjectId,
 
     // RAII resources owned by the controller so they outlive every instance
     // built against them. Underscore-prefixed: they're referenced by handle()
@@ -67,6 +69,7 @@ impl PhaseController {
         right_digit: ObjectId,
         welcome_label: ObjectId,
         game_over_label: ObjectId,
+        game_over_controls_label: ObjectId,
         winning_score: u8,
         goal_line_x: f32,
         paddle_mesh: Mesh,
@@ -89,6 +92,7 @@ impl PhaseController {
             right_digit,
             welcome_label,
             game_over_label,
+            game_over_controls_label,
             _paddle_mesh: paddle_mesh,
             _wall_mesh: wall_mesh,
             _digit_meshes: digit_meshes,
@@ -139,11 +143,11 @@ impl Behaviour for PhaseController {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx) {
-        // Edge inputs: Escape exits, Space drives phase transitions. Polled
-        // from `update` (not `fixed_update`) so a tapped Space is consumed
-        // once per frame, not once per fixed substep.
+        // Edge inputs: Escape returns to the main menu, Space drives phase
+        // transitions. Polled from `update` (not `fixed_update`) so a tapped
+        // key is consumed once per frame, not once per fixed substep.
         if ctx.input.was_just_pressed(KeyCode::Escape) {
-            ctx.request_exit();
+            ctx.request_scene(crate::scene_menu::build_menu);
             return;
         }
         if ctx.input.was_just_pressed(KeyCode::Space) {
@@ -159,6 +163,7 @@ impl Behaviour for PhaseController {
                 GamePhase::End => {
                     self.phase = GamePhase::Start;
                     Self::set_label_visible(ctx, self.game_over_label, false);
+                    Self::set_label_visible(ctx, self.game_over_controls_label, false);
                     Self::set_label_visible(ctx, self.welcome_label, true);
                     self.left_score = 0;
                     self.right_score = 0;
@@ -210,6 +215,7 @@ impl Behaviour for PhaseController {
         if self.match_over() {
             self.phase = GamePhase::End;
             Self::set_label_visible(ctx, self.game_over_label, true);
+            Self::set_label_visible(ctx, self.game_over_controls_label, true);
             ctx.audio.play(&self.game_over_sfx);
         } else {
             self.phase = GamePhase::Start;
