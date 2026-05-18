@@ -59,10 +59,8 @@ use crate::graphics_manager::constants::IS_PAINT_FPS_COUNTER;
 use crate::graphics_manager::GraphicsManager;
 use crate::input::Input;
 use crate::resources::Resources;
-use crate::scene::Scene;
+use crate::scene::{Scene, SceneBuilder};
 use crate::time::Time;
-
-type SceneBuilder = Box<dyn FnOnce(&mut Resources, &mut GraphicsManager) -> Scene>;
 
 pub struct App {
     scene_builder: Option<SceneBuilder>,
@@ -233,6 +231,8 @@ impl ApplicationHandler for AppState {
 fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
     engine.time.begin_frame();
 
+    let mut pending_scene: Option<SceneBuilder> = None;
+
     // Drain accumulator: deterministic physics ticks.
     engine.time.set_phase_fixed();
     while engine.time.consume_fixed_step() {
@@ -243,6 +243,7 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
             &mut engine.graphics_manager,
             &mut engine.audio,
             exit_requested,
+            &mut pending_scene,
         );
         engine.scene.apply_commands(&mut engine.graphics_manager);
     }
@@ -256,8 +257,24 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
         &mut engine.graphics_manager,
         &mut engine.audio,
         exit_requested,
+        &mut pending_scene,
     );
     engine.scene.apply_commands(&mut engine.graphics_manager);
+
+    // Scene swap. Order matters for asset reuse: build the new scene *first*
+    // (its loader calls cache-hit against the still-alive old scene's Rcs,
+    // bumping refcount), then tear down the old scene (refcount falls; only
+    // assets not also held by the new scene hit zero and queue), then
+    // flush_pending (destroys those). Synchronous, so the next frame draws
+    // against a fully-populated new scene; the *current* frame still draws
+    // the (now torn-down) old scene one last time — see below.
+    if let Some(builder) = pending_scene.take() {
+        let new_scene = builder(&mut engine.resources, &mut engine.graphics_manager);
+        let mut old = std::mem::replace(&mut engine.scene, new_scene);
+        old.teardown(&mut engine.graphics_manager);
+        drop(old);
+        engine.scene.apply_commands(&mut engine.graphics_manager);
+    }
 
     // Clear edge state *after* both dispatches so every fixed_update and the
     // update of one frame see the same `was_just_pressed` / `was_just_released`
@@ -265,7 +282,8 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
     engine.input.end_frame();
 
     // Resource RAII flush must happen between frames — see resources.rs for
-    // why we don't do it in Drop.
+    // why we don't do it in Drop. Also reclaims assets dropped during the
+    // scene swap above.
     engine.resources.flush_pending(&mut engine.graphics_manager);
     // Push every populated camera slot. Cache-checked per slot, so static
     // cameras only pay the actual `device_wait_idle` + UBO-write cost the

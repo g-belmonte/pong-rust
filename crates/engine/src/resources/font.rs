@@ -59,6 +59,11 @@ pub struct GlyphInfo {
 /// Owns the [`Texture`] via RAII — drop the atlas and the GPU resource
 /// queues for cleanup like any other engine-loaded texture. `glyphs` is
 /// keyed by char; lookups for missing chars return `None` (caller skips them).
+///
+/// `Clone` bumps the inner [`Texture`]'s refcount cheaply but copies the
+/// glyph HashMap (~95 small entries) — done once per scene transition that
+/// keeps the same font, never per-frame.
+#[derive(Clone)]
 pub struct FontAtlas {
     pub texture: Texture,
     pub glyphs: HashMap<char, GlyphInfo>,

@@ -130,6 +130,13 @@ pub enum Renderable {
     },
 }
 
+/// Boxed scene-construction closure. Handed to [`crate::app::App::with_scene`]
+/// at startup, and to [`UpdateCtx::request_scene`] at runtime when a behaviour
+/// wants to swap the live scene. Receives the same `Resources` + `GraphicsManager`
+/// the previous scene used — combined with [`Resources`]'s content cache,
+/// shared assets are reused across the swap instead of re-uploaded.
+pub type SceneBuilder = Box<dyn FnOnce(&mut Resources, &mut GraphicsManager) -> Scene>;
+
 /// Per-call context passed to behaviour hooks.
 ///
 /// While a behaviour's hook is running, its own `behaviours` vec is empty
@@ -152,11 +159,29 @@ pub struct UpdateCtx<'a> {
     /// Behaviours set this to request graceful exit. The engine honours it
     /// at the next iteration of the event loop.
     pub exit_requested: &'a mut bool,
+    /// Behaviours set this to request a scene swap. The engine performs the
+    /// swap at the end of the current frame, after every dispatch and after
+    /// `apply_commands`: it runs the new builder first (so any shared assets
+    /// loaded via [`Resources`] cache-hit against the still-alive old scene's
+    /// refcounts), then tears down the old scene, then `flush_pending` to
+    /// destroy assets no longer referenced. Last-write-wins if multiple
+    /// behaviours call `request_scene` in the same frame.
+    pub pending_scene: &'a mut Option<SceneBuilder>,
 }
 
 impl<'a> UpdateCtx<'a> {
     pub fn request_exit(&mut self) {
         *self.exit_requested = true;
+    }
+
+    /// Queue a scene swap. `builder` runs at end-of-frame against the same
+    /// [`Resources`] / [`GraphicsManager`] the current scene used; shared
+    /// assets reload as cache-hits. See [`pending_scene`](Self::pending_scene).
+    pub fn request_scene<F>(&mut self, builder: F)
+    where
+        F: FnOnce(&mut Resources, &mut GraphicsManager) -> Scene + 'static,
+    {
+        *self.pending_scene = Some(Box::new(builder));
     }
 }
 
@@ -405,6 +430,19 @@ impl Scene {
         }
     }
 
+    /// Despawn every object and apply, unregistering all renderable
+    /// instances from the renderer and running every behaviour's
+    /// `on_despawn`. Called by the engine right before replacing this scene
+    /// with a new one — `Drop` alone can't do this work because it has no
+    /// access to `&mut GraphicsManager`.
+    pub fn teardown(&mut self, gm: &mut GraphicsManager) {
+        let ids: Vec<ObjectId> = self.objects.keys().copied().collect();
+        for id in ids {
+            self.despawn(id);
+        }
+        self.apply_commands(gm);
+    }
+
     /// Build the `(ModelHandle, Mat4)` list the renderer expects each frame.
     /// Walks every object, emits the renderable's instance (parked if
     /// `!visible`), and lets each behaviour contribute extra entries.
@@ -435,10 +473,20 @@ impl Scene {
         gm: &mut GraphicsManager,
         audio: &mut AudioManager,
         exit_requested: &mut bool,
+        pending_scene: &mut Option<SceneBuilder>,
     ) {
-        self.dispatch_hook(time, input, resources, gm, audio, exit_requested, |b, ctx| {
-            b.update(ctx);
-        });
+        self.dispatch_hook(
+            time,
+            input,
+            resources,
+            gm,
+            audio,
+            exit_requested,
+            pending_scene,
+            |b, ctx| {
+                b.update(ctx);
+            },
+        );
     }
 
     /// Dispatch `fixed_update`. Called once per consumed accumulator step.
@@ -451,10 +499,20 @@ impl Scene {
         gm: &mut GraphicsManager,
         audio: &mut AudioManager,
         exit_requested: &mut bool,
+        pending_scene: &mut Option<SceneBuilder>,
     ) {
-        self.dispatch_hook(time, input, resources, gm, audio, exit_requested, |b, ctx| {
-            b.fixed_update(ctx);
-        });
+        self.dispatch_hook(
+            time,
+            input,
+            resources,
+            gm,
+            audio,
+            exit_requested,
+            pending_scene,
+            |b, ctx| {
+                b.fixed_update(ctx);
+            },
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -466,6 +524,7 @@ impl Scene {
         gm: &mut GraphicsManager,
         audio: &mut AudioManager,
         exit_requested: &mut bool,
+        pending_scene: &mut Option<SceneBuilder>,
         mut call: impl FnMut(&mut Box<dyn Behaviour>, &mut UpdateCtx),
     ) {
         // Snapshot IDs so that mid-dispatch spawns (which only land at
@@ -486,6 +545,7 @@ impl Scene {
                     graphics: gm,
                     audio,
                     exit_requested,
+                    pending_scene,
                 };
                 call(b, &mut ctx);
             }

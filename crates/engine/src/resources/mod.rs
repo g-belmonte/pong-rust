@@ -1,22 +1,41 @@
-//! Resource management: RAII handles for meshes and textures, plus content
-//! loaders (font atlases, OBJ / glTF meshes).
+//! Resource management: refcounted shared handles for meshes and textures,
+//! plus content loaders (font atlases, OBJ / glTF meshes).
 //!
 //! Game code talks to [`Resources`] instead of calling the renderer's
-//! `register_*` methods directly. Loaders return owning wrappers ([`Mesh`],
-//! [`Texture`]) that queue a destroy on `Drop`; [`Resources::flush_pending`]
-//! drains that queue against the renderer at a frame boundary, which is when
-//! it is safe to call `device_wait_idle` + free.
+//! `register_*` methods directly. Loaders return clonable handles ([`Mesh`],
+//! [`Texture`]) that wrap an internal `Rc`; the GPU resource is destroyed
+//! when the last clone drops. Drops queue into a pending-destroy list which
+//! [`Resources::flush_pending`] drains at a frame boundary, where it is safe
+//! to call `device_wait_idle` + free.
 //!
-//! The wrappers expose their inner `MeshHandle` / `TextureHandle` (`Copy` IDs)
-//! via `handle()` so callers can still register instances against them through
+//! ## Sharing across scenes
+//!
+//! [`Resources`] keeps a content-addressed cache keyed by a hash of the input
+//! bytes. `load_mesh` / `load_texture_*` look up the cache first: if a live
+//! clone is still alive somewhere (refcount ≥ 1) they return another clone
+//! against the existing GPU resource; otherwise they upload fresh and store a
+//! [`std::rc::Weak`] in the cache. This means two scenes that load the same
+//! assets share the same GPU memory, and a scene switch that retains shared
+//! assets in its new behaviours never re-uploads them.
+//!
+//! Combine with [`UpdateCtx::request_scene`](crate::scene::UpdateCtx::request_scene)
+//! and the App's swap logic (new builder runs *before* old scene is torn
+//! down, so shared assets keep refcount ≥ 1 across the transition) to get
+//! "destroy what isn't reused, keep what is, upload what's new" behaviour
+//! implicitly.
+//!
+//! The cache holds `Weak`s, so a cached entry never keeps an asset alive on
+//! its own — the asset survives only as long as game code keeps at least one
+//! [`Mesh`] / [`Texture`] clone. Stale `Weak`s are garbage-collected lazily
+//! inside `flush_pending`.
+//!
+//! ## Handle identity
+//!
+//! [`Mesh::handle`] / [`Texture::handle`] still expose the renderer's `Copy`
+//! ID for callers that need to register instances against them through
 //! [`GraphicsManager::register_instance`] / `register_textured_instance` —
 //! instances are not RAII (see ARCHITECTURE.md Phase 2 for that ownership).
-//!
-//! Content loaders ([`Resources::load_font`], [`Resources::load_obj`],
-//! [`Resources::load_gltf`]) parse asset bytes and produce engine types
-//! (RAII handles, [`FontAtlas`], [`MeshData`]). The OBJ + glTF loaders are
-//! gated behind the `obj` / `gltf` Cargo features so games that don't need
-//! them pay zero dep cost.
+//! Two clones of the same `Mesh` return the same handle.
 
 pub mod font;
 pub mod model;
@@ -25,7 +44,10 @@ pub use font::{FontAtlas, GlyphInfo};
 pub use model::{pack_lit_vertices, MeshData};
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::rc::{Rc, Weak};
 
 use crate::audio::Sound;
 use crate::graphics_manager::structures::ModelMesh;
@@ -49,6 +71,12 @@ impl PendingDestroys {
 
 pub struct Resources {
     pending: Rc<RefCell<PendingDestroys>>,
+    // Content-addressed caches. Keys are 64-bit hashes of the input bytes
+    // (plus dimensions where relevant). Values are `Weak`s so the cache does
+    // not keep assets alive — the asset survives only as long as game code
+    // holds at least one `Mesh` / `Texture` clone.
+    cache_meshes: HashMap<u64, Weak<MeshInner>>,
+    cache_textures: HashMap<u64, Weak<TextureInner>>,
 }
 
 impl Default for Resources {
@@ -61,23 +89,37 @@ impl Resources {
     pub fn new() -> Self {
         Self {
             pending: Rc::new(RefCell::new(PendingDestroys::new())),
+            cache_meshes: HashMap::new(),
+            cache_textures: HashMap::new(),
         }
     }
 
     pub fn load_mesh(&mut self, gm: &mut GraphicsManager, mesh: &ModelMesh) -> Mesh {
+        let key = hash_mesh(mesh);
+        if let Some(existing) = self.cache_meshes.get(&key).and_then(|w| w.upgrade()) {
+            return Mesh { inner: existing };
+        }
         let handle = gm.register_mesh(mesh);
-        Mesh {
+        let inner = Rc::new(MeshInner {
             handle,
             pending: Rc::clone(&self.pending),
-        }
+        });
+        self.cache_meshes.insert(key, Rc::downgrade(&inner));
+        Mesh { inner }
     }
 
     pub fn load_texture_png(&mut self, gm: &mut GraphicsManager, bytes: &[u8]) -> Texture {
+        let key = hash_bytes_tagged(b"png", bytes);
+        if let Some(existing) = self.cache_textures.get(&key).and_then(|w| w.upgrade()) {
+            return Texture { inner: existing };
+        }
         let handle = gm.register_texture(bytes);
-        Texture {
+        let inner = Rc::new(TextureInner {
             handle,
             pending: Rc::clone(&self.pending),
-        }
+        });
+        self.cache_textures.insert(key, Rc::downgrade(&inner));
+        Texture { inner }
     }
 
     pub fn load_texture_rgba(
@@ -87,11 +129,17 @@ impl Resources {
         height: u32,
         rgba: &[u8],
     ) -> Texture {
+        let key = hash_rgba(width, height, rgba);
+        if let Some(existing) = self.cache_textures.get(&key).and_then(|w| w.upgrade()) {
+            return Texture { inner: existing };
+        }
         let handle = gm.register_texture_rgba(width, height, rgba);
-        Texture {
+        let inner = Rc::new(TextureInner {
             handle,
             pending: Rc::clone(&self.pending),
-        }
+        });
+        self.cache_textures.insert(key, Rc::downgrade(&inner));
+        Texture { inner }
     }
 
     /// Register a custom material (vertex+fragment shaders + vertex/instance
@@ -128,6 +176,11 @@ impl Resources {
     /// an RGBA8 texture (white RGB + alpha = bitmap mask, fragment-shader
     /// `discard` handles the masking), upload, and return a [`FontAtlas`]
     /// with the RAII texture + glyph metadata. See [`font::FontAtlas`].
+    ///
+    /// The baked atlas bytes go through [`load_texture_rgba`](Self::load_texture_rgba),
+    /// so the GPU texture is shared across two `load_font` calls with the
+    /// same `(bytes, px)`. The CPU bake (rasterise + shelf-pack) does run
+    /// again on each call — sub-millisecond for ASCII at typical sizes.
     pub fn load_font(&mut self, gm: &mut GraphicsManager, bytes: &[u8], px: f32) -> FontAtlas {
         FontAtlas::build(self, gm, bytes, px)
     }
@@ -179,15 +232,14 @@ impl Resources {
             .collect()
     }
 
-    /// Drain any queued resource destroys. Must be called at a point where the
-    /// GPU is not actively reading the resources — currently between frames,
-    /// before `draw_frame`. Each `unregister_*` issues its own `device_wait_idle`.
+    /// Drain any queued resource destroys and garbage-collect stale cache
+    /// entries (`Weak`s whose target has dropped). Must be called at a point
+    /// where the GPU is not actively reading the resources — currently
+    /// between frames, before `draw_frame`. Each `unregister_*` issues its
+    /// own `device_wait_idle`.
     pub fn flush_pending(&mut self, gm: &mut GraphicsManager) {
         let (meshes, textures) = {
             let mut pending = self.pending.borrow_mut();
-            if pending.meshes.is_empty() && pending.textures.is_empty() {
-                return;
-            }
             (
                 std::mem::take(&mut pending.meshes),
                 std::mem::take(&mut pending.textures),
@@ -199,39 +251,90 @@ impl Resources {
         for h in textures {
             gm.unregister_texture(h);
         }
+        // GC stale cache entries. Cheap; runs once per frame against a small
+        // map (one entry per distinct loaded asset).
+        self.cache_meshes.retain(|_, w| w.strong_count() > 0);
+        self.cache_textures.retain(|_, w| w.strong_count() > 0);
     }
 }
 
-pub struct Mesh {
+/// Inner refcounted body of a [`Mesh`]. `Drop` queues GPU destruction for
+/// the next [`Resources::flush_pending`] — only fires when the last [`Mesh`]
+/// clone is dropped.
+struct MeshInner {
     handle: MeshHandle,
     pending: Rc<RefCell<PendingDestroys>>,
 }
 
-impl Mesh {
-    pub fn handle(&self) -> MeshHandle {
-        self.handle
-    }
-}
-
-impl Drop for Mesh {
+impl Drop for MeshInner {
     fn drop(&mut self) {
         self.pending.borrow_mut().meshes.push(self.handle);
     }
 }
 
-pub struct Texture {
+/// Refcounted handle to a registered mesh. Cheap to clone (one `Rc::clone`);
+/// every clone shares the same underlying GPU buffer and the same renderer
+/// [`MeshHandle`]. The GPU buffer is destroyed when the last clone drops.
+#[derive(Clone)]
+pub struct Mesh {
+    inner: Rc<MeshInner>,
+}
+
+impl Mesh {
+    pub fn handle(&self) -> MeshHandle {
+        self.inner.handle
+    }
+}
+
+/// Inner refcounted body of a [`Texture`]. See [`MeshInner`].
+struct TextureInner {
     handle: TextureHandle,
     pending: Rc<RefCell<PendingDestroys>>,
 }
 
-impl Texture {
-    pub fn handle(&self) -> TextureHandle {
-        self.handle
-    }
-}
-
-impl Drop for Texture {
+impl Drop for TextureInner {
     fn drop(&mut self) {
         self.pending.borrow_mut().textures.push(self.handle);
     }
+}
+
+/// Refcounted handle to a registered texture. Cheap to clone; every clone
+/// shares the same underlying GPU image and the same renderer
+/// [`TextureHandle`]. The GPU image is destroyed when the last clone drops.
+#[derive(Clone)]
+pub struct Texture {
+    inner: Rc<TextureInner>,
+}
+
+impl Texture {
+    pub fn handle(&self) -> TextureHandle {
+        self.inner.handle
+    }
+}
+
+// --- hashing helpers ---------------------------------------------------------
+
+fn hash_mesh(mesh: &ModelMesh) -> u64 {
+    let mut h = DefaultHasher::new();
+    b"mesh".hash(&mut h);
+    mesh.vertex_stride.hash(&mut h);
+    mesh.vertex_bytes.hash(&mut h);
+    mesh.indices.hash(&mut h);
+    h.finish()
+}
+
+fn hash_bytes_tagged(tag: &[u8], bytes: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    tag.hash(&mut h);
+    bytes.hash(&mut h);
+    h.finish()
+}
+
+fn hash_rgba(width: u32, height: u32, bytes: &[u8]) -> u64 {
+    let mut h = DefaultHasher::new();
+    b"rgba".hash(&mut h);
+    width.hash(&mut h);
+    height.hash(&mut h);
+    bytes.hash(&mut h);
+    h.finish()
 }
