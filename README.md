@@ -41,11 +41,15 @@ Tested with `rustc 1.73.0`
 
 ## Compile shaders
 
-On the root of the project, run this command:
+Shaders are compiled automatically by each crate's `build.rs` on `cargo
+build` — it shells out to `glslc` (Arch: `shaderc`) for every file in
+`shaders/src/` and writes the SPV to `shaders/spv/`. Cargo re-runs the
+build script when any source under `shaders/src/` changes, so a normal
+edit-build cycle picks up shader changes without extra steps.
 
-`scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv`
-
-Note: there are clearly no cleanup systems in place. It would be considered good manners to cleanup things with a friendly `rm -rf ./crates/engine/shaders/spv` before beginning any work.
+Manual one-shot compile (e.g. as an editor on-save hook for the
+`hot-reload` workflow described below) is still available via the legacy
+script: `scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv`.
 
 ## Controls
 

@@ -5,16 +5,18 @@ Guidance for Claude Code when working in this repo. **Start by reading [ARCHITEC
 ## Build & run
 
 ```sh
-scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv   # requires `glslc` (Arch: shaderc)
-scripts/compile-shaders.sh crates/pong/shaders/src crates/pong/shaders/spv       # pong's tinted-text material (menu)
-cargo build                                                                       # workspace
+cargo build                                                                       # workspace (build.rs auto-compiles shaders)
 cargo run -p pong                                                                 # opens on the main menu
 cargo run -p pong --release
 cargo run -p test-3d                                                              # 3D smoke test (Escape quits)
-cargo run -p pong --features hot-reload                                           # opt-in shader hot-reload
+cargo run -p pong --features hot-reload                                           # opt-in shader + asset hot-reload
 ```
 
-Shaders must be compiled **before** `cargo build` — the engine `include_bytes!`'s the SPV blobs, so a missing `crates/engine/shaders/spv/` directory is a compile error, not a runtime one. The shader script doesn't actually clean stale outputs (the `rm -rf "$output_folder/*"` is unquoted and matches nothing) — when in doubt, `rm -rf crates/engine/shaders/spv crates/pong/shaders/spv` first.
+Shaders are compiled by `crates/engine/build.rs` + `crates/pong/build.rs` (both shell out to `glslc`, Arch: `shaderc`). The engine still `include_bytes!`'s the SPV blobs, so the build.rs writes them under `shaders/spv/` before the lib crate compiles. Cargo's `rerun-if-changed=shaders/src` makes the script re-run on any GLSL edit. A missing `glslc` fails the build with a clear panic from build.rs — much earlier than the old `include_bytes!` not-found error.
+
+`scripts/compile-shaders.sh` is kept around as a one-shot manual compile (useful as an editor on-save hook in the `hot-reload` workflow, where the running binary needs SPV updates without a full `cargo build`).
+
+The "delete SPV dir to force rebuild" trick from before *won't* trigger a rebuild — cargo doesn't track build-script outputs, so missing SPV outputs aren't a signal for cargo to re-run build.rs. If you really need a clean slate, `cargo clean -p engine -p pong` or `touch crates/engine/shaders/src/main.vert` instead.
 
 External runtime requirements: a Vulkan-capable GPU + drivers, plus Khronos validation layers (Arch: `vulkan-validation-layers`). `VALIDATION.is_enable = true` in `crates/engine/src/graphics_manager/constants.rs` is hard-coded — the binary fails to create the Vulkan instance if `VK_LAYER_KHRONOS_validation` is not installed. No test suite; `cargo test` runs nothing.
 
