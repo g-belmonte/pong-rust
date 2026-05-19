@@ -1,6 +1,7 @@
 mod ball;
 mod digit;
 mod paddle;
+mod pause;
 mod phase;
 mod scene_game;
 mod scene_menu;

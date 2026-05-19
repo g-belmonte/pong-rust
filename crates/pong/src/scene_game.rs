@@ -31,7 +31,9 @@ use engine::scene::{Object, Renderable, Scene, Transform};
 use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
 use crate::paddle::PaddleBehaviour;
+use crate::pause;
 use crate::phase::PhaseController;
+use crate::scene_menu::register_tinted_text_material;
 use crate::settings::Settings;
 use crate::text::TextLabelBehaviour;
 use crate::wall::WallBehaviour;
@@ -232,7 +234,7 @@ pub fn build_game(
             .with_behaviour(TextLabelBehaviour::new(
                 gm,
                 &font_atlas,
-                "SPACE replay     ESC menu",
+                "SPACE replay",
                 FONT_WORLD_SCALE,
                 false,
             )),
@@ -253,11 +255,29 @@ pub fn build_game(
             paddle_mesh,
             wall_mesh,
             digit_meshes,
-            font_atlas,
+            font_atlas.clone(),
             score_sfx,
             game_over_sfx,
-            settings,
         )),
+    );
+
+    // Pause overlay: dimmer material registered *before* the tinted-text
+    // material so the backdrop paints under the menu text. Both run
+    // depth-disabled — paint order is registration order. See `pause` module
+    // docs for the full layering rationale.
+    let dimmer_material = pause::register_dimmer_material(resources, gm);
+    let tinted_material = register_tinted_text_material(resources, gm);
+    let dimmer_mesh = resources.load_mesh(gm, &rect_mesh(1.0, 1.0));
+    pause::spawn(
+        &mut scene,
+        gm,
+        font_atlas,
+        dimmer_material,
+        dimmer_mesh,
+        tinted_material,
+        FONT_WORLD_SCALE,
+        CAMERA_HALF_HEIGHT,
+        settings,
     );
 
     scene

@@ -299,6 +299,12 @@ pub struct Scene {
     objects: HashMap<ObjectId, Object>,
     next_id: u32,
     commands: Vec<SceneCommand>,
+    /// When `true`, the engine skips dispatching `fixed_update` for this
+    /// scene and clears the fixed-step accumulator each frame. `update`
+    /// continues to run so an overlay behaviour can still poll input and
+    /// drive the unpause edge. Toggle through [`Scene::set_paused`] /
+    /// [`Scene::is_paused`].
+    paused: bool,
 }
 
 impl Default for Scene {
@@ -316,7 +322,21 @@ impl Scene {
             objects: HashMap::new(),
             next_id: 0,
             commands: Vec::new(),
+            paused: false,
         }
+    }
+
+    /// Pause / resume the scene. While paused, the engine skips
+    /// `fixed_update` dispatch and clears the fixed-step accumulator each
+    /// frame, so unpausing doesn't trigger a burst of catch-up ticks.
+    /// `update` keeps running so an overlay behaviour can poll input and
+    /// drive the unpause edge.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused
     }
 
     /// Install a camera at the given slot. Replaces any previous occupant.

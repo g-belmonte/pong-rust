@@ -110,6 +110,22 @@ pub enum DepthMode {
     ReadWrite,
 }
 
+/// Per-material colour-blend behaviour.
+///
+/// - [`BlendMode::Opaque`] — blending disabled. The fragment shader's output
+///   overwrites the framebuffer. The right choice for opaque geometry and for
+///   any material that already handles transparency via `discard` (the
+///   engine's textured material and pong's `text_tint` use alpha-discard).
+/// - [`BlendMode::Alpha`] — straight (non-premultiplied) alpha blending:
+///   `out = src.rgb * src.a + dst.rgb * (1 - src.a)`. Lets a material render
+///   semi-transparent fragments (pause-menu dimmer, fade-outs).
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum BlendMode {
+    #[default]
+    Opaque,
+    Alpha,
+}
+
 /// Material description supplied by game code (or by the engine for its
 /// built-ins). SPIR-V bytes are copied at registration time, so callers may
 /// `include_bytes!` from a `&'static [u8]` source.
@@ -128,6 +144,11 @@ pub struct MaterialDesc<'a> {
     /// care about depth) keep paint-order layering. 3D opaque materials want
     /// [`DepthMode::ReadWrite`].
     pub depth: DepthMode,
+    /// Colour-blend behaviour. Defaults to [`BlendMode::Opaque`] — the engine's
+    /// existing materials all rely on alpha-discard in the fragment shader or
+    /// are fully opaque. Pick [`BlendMode::Alpha`] for materials that need real
+    /// transparency (semi-transparent UI overlays, fade effects).
+    pub blend: BlendMode,
 }
 
 /// Internal registered material. Fields marked "rebuilt on swapchain
@@ -149,6 +170,10 @@ pub(crate) struct Material {
     /// Depth-buffer behaviour. Threaded into `create_pipeline` on both
     /// initial registration and `recreate_swapchain` rebuilds.
     pub(crate) depth: DepthMode,
+
+    /// Colour-blend behaviour. Threaded into `create_pipeline` on both initial
+    /// registration and `recreate_swapchain` rebuilds.
+    pub(crate) blend: BlendMode,
 
     /// Camera slot this material samples — extracted from `Binding::CameraUbo`
     /// at registration time. The renderer uses this to pick the right
@@ -424,6 +449,7 @@ pub(crate) fn create_pipeline(
     vertex_attrs: &[VertexAttr],
     instance_attrs: &[VertexAttr],
     depth: DepthMode,
+    blend: BlendMode,
 ) -> (vk::Pipeline, vk::PipelineLayout, u32, u32) {
     let vert_shader_module = share::create_shader_module(device, vertex_spv.to_vec());
     let frag_shader_module = share::create_shader_module(device, fragment_spv.to_vec());
@@ -580,16 +606,32 @@ pub(crate) fn create_pipeline(
         ..Default::default()
     };
 
-    let color_blend_attachments = [vk::PipelineColorBlendAttachmentState {
-        blend_enable: vk::FALSE,
-        color_write_mask: vk::ColorComponentFlags::RGBA,
-        src_color_blend_factor: vk::BlendFactor::ONE,
-        dst_color_blend_factor: vk::BlendFactor::ZERO,
-        color_blend_op: vk::BlendOp::ADD,
-        src_alpha_blend_factor: vk::BlendFactor::ONE,
-        dst_alpha_blend_factor: vk::BlendFactor::ZERO,
-        alpha_blend_op: vk::BlendOp::ADD,
-        ..Default::default()
+    // Per-material blend setup. Opaque is the historical default (no blend,
+    // src overwrites dst). Alpha is straight (non-premultiplied) source-over —
+    // see `BlendMode::Alpha` docs for the formula.
+    let color_blend_attachments = [match blend {
+        BlendMode::Opaque => vk::PipelineColorBlendAttachmentState {
+            blend_enable: vk::FALSE,
+            color_write_mask: vk::ColorComponentFlags::RGBA,
+            src_color_blend_factor: vk::BlendFactor::ONE,
+            dst_color_blend_factor: vk::BlendFactor::ZERO,
+            color_blend_op: vk::BlendOp::ADD,
+            src_alpha_blend_factor: vk::BlendFactor::ONE,
+            dst_alpha_blend_factor: vk::BlendFactor::ZERO,
+            alpha_blend_op: vk::BlendOp::ADD,
+            ..Default::default()
+        },
+        BlendMode::Alpha => vk::PipelineColorBlendAttachmentState {
+            blend_enable: vk::TRUE,
+            color_write_mask: vk::ColorComponentFlags::RGBA,
+            src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
+            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            color_blend_op: vk::BlendOp::ADD,
+            src_alpha_blend_factor: vk::BlendFactor::ONE,
+            dst_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            alpha_blend_op: vk::BlendOp::ADD,
+            ..Default::default()
+        },
     }];
     let color_blend_state = vk::PipelineColorBlendStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,

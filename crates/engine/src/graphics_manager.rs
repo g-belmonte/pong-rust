@@ -19,7 +19,9 @@ use ash::vk;
 use std::collections::HashMap;
 use std::ptr;
 
-pub use self::material::{Binding, DepthMode, MaterialDesc, MaterialHandle, VertexAttr};
+pub use self::material::{
+    Binding, BlendMode, DepthMode, MaterialDesc, MaterialHandle, VertexAttr,
+};
 use self::material::{
     allocate_camera_descriptor_sets, allocate_textured_descriptor_sets,
     create_descriptor_set_layout as create_material_descriptor_set_layout,
@@ -408,6 +410,7 @@ impl GraphicsManager {
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
             bindings: &[Binding::CameraUbo(0)],
             depth: DepthMode::Disabled,
+            blend: BlendMode::Opaque,
         });
         gm.solid_material_handle = solid_handle;
 
@@ -422,6 +425,7 @@ impl GraphicsManager {
             ],
             bindings: &[Binding::CameraUbo(0), Binding::Sampler2d],
             depth: DepthMode::Disabled,
+            blend: BlendMode::Opaque,
         });
         gm.textured_material_handle = textured_handle;
 
@@ -530,6 +534,7 @@ impl GraphicsManager {
             desc.vertex_attrs,
             desc.instance_attrs,
             desc.depth,
+            desc.blend,
         );
         // Per-instance buffer: host-visible+coherent, rewritten each frame.
         let buffer_size =
@@ -578,6 +583,7 @@ impl GraphicsManager {
                 instance_stride,
                 extra_size,
                 depth: desc.depth,
+                blend: desc.blend,
                 camera_slot,
                 descriptor_set_layout,
                 pipeline_layout,
@@ -1418,6 +1424,7 @@ impl GraphicsManager {
                 &mat.vertex_attrs,
                 &mat.instance_attrs,
                 mat.depth,
+                mat.blend,
             );
             mat.pipeline = pipeline;
             mat.pipeline_layout = pipeline_layout;
@@ -1646,6 +1653,7 @@ impl GraphicsManager {
                     &mat.vertex_attrs,
                     &mat.instance_attrs,
                     mat.depth,
+                    mat.blend,
                 )
             }));
             match result {

@@ -20,7 +20,7 @@ use std::rc::Rc;
 
 use engine::camera::Camera2D;
 use engine::graphics_manager::{
-    Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
+    Binding, BlendMode, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
 };
 use engine::input::{KeyCode, MouseButton};
 use engine::resources::{FontAtlas, Resources};
@@ -78,6 +78,7 @@ pub(crate) fn register_tinted_text_material(
             ],
             bindings: &[Binding::CameraUbo(0), Binding::Sampler2d],
             depth: DepthMode::Disabled,
+            blend: BlendMode::Opaque,
         },
     )
 }

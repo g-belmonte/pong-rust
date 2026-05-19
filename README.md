@@ -66,9 +66,12 @@ returns to the menu. Settings persist as JSON at
 and load automatically on the next launch.
 
 In-game: **W / S** drive the left paddle, **I / K** drive the right paddle,
-**Space** starts a match (and replays after Game Over), **Escape** returns to
-the main menu. Settings changes take effect at the *next* Play — a match in
-progress keeps its starting values.
+**Space** starts a match (and replays after Game Over), **Escape** opens a
+pause overlay. The overlay offers **Continue** (resume play) and **Quit**
+(back to the main menu); navigate it with **Up / Down + Enter** or the
+mouse, same as the main menu. While paused the physics is frozen but the
+game frame stays visible behind a dimmed backdrop. Settings changes take
+effect at the *next* Play — a match in progress keeps its starting values.
 
 The ball's outgoing angle depends on where it strikes the paddle: a centre
 hit returns it nearly flat, edge hits send it back at a steep angle (up to

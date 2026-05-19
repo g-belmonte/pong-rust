@@ -233,19 +233,26 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
 
     let mut pending_scene: Option<SceneBuilder> = None;
 
-    // Drain accumulator: deterministic physics ticks.
+    // Drain accumulator: deterministic physics ticks. Skipped while the
+    // scene is paused — `update` keeps running so an overlay can read input,
+    // but `fixed_update` (physics) is suppressed. We also clear the
+    // accumulator so unpausing doesn't unleash a burst of catch-up steps.
     engine.time.set_phase_fixed();
-    while engine.time.consume_fixed_step() {
-        engine.scene.dispatch_fixed_update(
-            &engine.time,
-            &engine.input,
-            &mut engine.resources,
-            &mut engine.graphics_manager,
-            &mut engine.audio,
-            exit_requested,
-            &mut pending_scene,
-        );
-        engine.scene.apply_commands(&mut engine.graphics_manager);
+    if engine.scene.is_paused() {
+        engine.time.clear_accumulator();
+    } else {
+        while engine.time.consume_fixed_step() {
+            engine.scene.dispatch_fixed_update(
+                &engine.time,
+                &engine.input,
+                &mut engine.resources,
+                &mut engine.graphics_manager,
+                &mut engine.audio,
+                exit_requested,
+                &mut pending_scene,
+            );
+            engine.scene.apply_commands(&mut engine.graphics_manager);
+        }
     }
 
     // Variable-rate update: rendering-bound work + edge input.

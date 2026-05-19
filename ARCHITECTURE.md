@@ -64,6 +64,8 @@ The renderer is built around a generic **material registry** — there is no har
 
 The render pass always carries a `D32_SFLOAT` depth attachment; each material's `DepthMode { Disabled | ReadOnly | ReadWrite }` picks how its pipeline interacts with depth. Mixing modes in one scene is the supported path for "3D world with 2D HUD on top". The built-in materials run `Disabled` so Pong's pre-3D paint-order layering still works.
 
+Each material also declares a `BlendMode { Opaque | Alpha }`. `Opaque` is the default and disables blending; the engine's built-ins and every alpha-discard fragment shader (textured atlas, tinted text) stay there. `Alpha` enables straight (non-premultiplied) source-over blending — used by pong's pause-menu dimmer to render a semi-transparent backdrop over the paused gameplay frame.
+
 Optional `hot-reload` Cargo feature watches `crates/engine/shaders/spv/` and rebuilds the affected built-in material's pipeline on disk change, with `catch_unwind` + SPV rollback so a malformed shader keeps the old pipeline running. The same feature also enables non-shader asset hot-reload through `engine::resources::asset_watcher` (see the *Resources* section). Release builds have zero overhead.
 
 ### `engine::resources`
@@ -126,6 +128,7 @@ Key shapes:
 - **Cross-behaviour mutation via typed downcast.** `Scene::behaviour::<T>(id)` / `behaviour_mut::<T>(id)` use `Any` + `TypeId` to reach a sibling object's behaviour. Each behaviour must one-line-impl `as_any` / `as_any_mut`.
 - **Multi-instance entities are one Object whose behaviour owns extra `ModelHandle`s.** Digit segments (7), text glyphs (N), etc. The Object's `renderable` is `None`; the behaviour contributes `(handle, parent_matrix * local)` pairs from `collect_renderables` and unregisters them in `on_despawn`. Visibility uses the "always emit, park hidden ones at `hidden_transform()`" trick (necessary because `register_instance` initialises `last_model` to identity, not off-screen).
 - **Cameras live on `Scene::cameras: HashMap<u32, Box<dyn Camera>>`** keyed by slot. Each material declares which slot it samples via `Binding::CameraUbo(u32)`. Slot 0 is the conventional default (eagerly created); higher slots get UBOs lazily.
+- **Scene-wide pause flag.** `Scene::set_paused(bool)` / `is_paused()` gate physics: while paused the engine skips `fixed_update` dispatch *and clears the fixed-step accumulator* each frame so unpausing doesn't unleash a burst of catch-up ticks. `update` still runs, so an overlay behaviour can poll input and drive the unpause edge. Behaviours that have meaningful `update` work in a paused scene (state machines that consume input, etc.) opt out with an early `if ctx.scene.is_paused() { return; }` — pong's `PhaseController` does this so SPACE can't sneak phase transitions in under the pause overlay.
 
 ### `engine::camera`
 
@@ -193,7 +196,7 @@ These are the choices that shaped the engine's surface and would be expensive to
 - **Refcounted shared assets + content-addressed `Weak` cache, not explicit per-scene manifests.** `Mesh`/`Texture` are `Rc`-backed clonable handles. Two `load_texture_png(SAME_BYTES)` calls share GPU memory transparently; destruction queues when the last clone drops. The cache holds `Weak`s so it never keeps assets alive on its own. Manifests would give a clean audit surface but at the cost of two declarations per scene and a separate path for runtime spawns.
 - **Scene swap runs new builder *before* tearing down the old.** This keeps the old scene's `Rc`s alive *during* the new builder's calls, so a shared loader upgrades the cached `Weak` and shares the GPU resource rather than the obvious-but-wrong "old drops first → cache `Weak` dies → new uploads fresh" path. Synchronous, so the next frame draws against a fully populated new scene.
 - **`UpdateCtx::request_scene` over a return-value transition.** Mirrors the existing `request_exit` pattern; last-write-wins; doesn't force every `update` return type to grow a transition enum.
-- **One consistent navigation model: Escape always goes back-up; menu Quit is the only exit.** The previous "Escape exits from anywhere" shape was fine for a single-scene game but becomes a footgun the moment a menu exists. Quit on the menu is the explicit single exit point.
+- **One consistent navigation model: Escape always goes back-up; menu Quit is the only exit.** The previous "Escape exits from anywhere" shape was fine for a single-scene game but becomes a footgun the moment a menu exists. Quit on the menu is the explicit single exit point. In-game Escape now opens a pause overlay rather than transitioning directly to the menu — same "back-up" intent, with an extra Continue/Quit confirmation so the player doesn't lose a match to a mis-tapped key. The overlay's Quit option is what actually swaps back to the main menu.
 
 ### Dependencies
 

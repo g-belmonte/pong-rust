@@ -125,6 +125,13 @@ impl Time {
         }
     }
 
+    /// Reset the fixed-step accumulator to zero. Called by the engine each
+    /// frame the active scene is paused so unpausing doesn't trigger a burst
+    /// of catch-up fixed steps.
+    pub(crate) fn clear_accumulator(&mut self) {
+        self.accumulator = 0.0;
+    }
+
     pub(crate) fn set_phase_fixed(&mut self) {
         self.current_dt = self.fixed_dt;
     }

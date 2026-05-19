@@ -6,8 +6,6 @@
 //! kicking off the ball, scoring, resetting positions, ending the match.
 
 use std::any::Any;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use engine::Vec3;
 
@@ -19,7 +17,6 @@ use engine::scene::{Behaviour, ObjectId, UpdateCtx};
 use crate::ball::BallBehaviour;
 use crate::digit::{DigitBehaviour, DigitMeshes};
 use crate::paddle::PaddleBehaviour;
-use crate::settings::Settings;
 use crate::text::TextLabelBehaviour;
 use engine::resources::FontAtlas;
 
@@ -60,12 +57,6 @@ pub struct PhaseController {
     // cheap). Played on score / match-end transitions inside `update`.
     score_sfx: Sound,
     game_over_sfx: Sound,
-
-    /// Held so the Escape→menu transition can hand the same Rc back to
-    /// `scene_menu::build_menu`. The match itself doesn't read live settings
-    /// (those were snapshotted at `build_game` time); this is purely for the
-    /// hand-off.
-    settings: Rc<RefCell<Settings>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,7 +78,6 @@ impl PhaseController {
         font_atlas: FontAtlas,
         score_sfx: Sound,
         game_over_sfx: Sound,
-        settings: Rc<RefCell<Settings>>,
     ) -> Self {
         Self {
             phase: GamePhase::Start,
@@ -109,7 +99,6 @@ impl PhaseController {
             _font_atlas: font_atlas,
             score_sfx,
             game_over_sfx,
-            settings,
         }
     }
 
@@ -154,14 +143,16 @@ impl Behaviour for PhaseController {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx) {
-        // Edge inputs: Escape returns to the main menu, Space drives phase
-        // transitions. Polled from `update` (not `fixed_update`) so a tapped
-        // key is consumed once per frame, not once per fixed substep.
-        if ctx.input.was_just_pressed(KeyCode::Escape) {
-            let s = Rc::clone(&self.settings);
-            ctx.request_scene(move |res, gm| crate::scene_menu::build_menu(res, gm, s));
+        // While paused, `PauseController` owns input; bail before consuming
+        // any edges (SPACE in particular — pressing it during the pause
+        // overlay shouldn't progress the phase under the cover).
+        if ctx.scene.is_paused() {
             return;
         }
+
+        // SPACE drives phase transitions. ESC is handled by `PauseController`
+        // (opens the pause overlay; the overlay's Quit option is what
+        // eventually leads back to the main menu).
         if ctx.input.was_just_pressed(KeyCode::Space) {
             match self.phase {
                 GamePhase::Start => {

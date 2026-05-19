@@ -19,7 +19,7 @@ use engine::camera::{Camera2D, Camera3D};
 #[cfg(not(feature = "obj"))]
 use engine::graphics_manager::structures::ModelMesh;
 use engine::graphics_manager::{
-    Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
+    Binding, BlendMode, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, VertexAttr,
 };
 use engine::input::KeyCode;
 use engine::resources::{Mesh, Resources};
@@ -83,6 +83,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x3],
             bindings: &[Binding::CameraUbo(0)],
             depth: DepthMode::ReadWrite,
+            blend: BlendMode::Opaque,
         },
     );
 

@@ -13,8 +13,8 @@
 use std::any::Any;
 
 use engine::graphics_manager::{
-    Binding, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, ModelHandle, TextureHandle,
-    VertexAttr,
+    Binding, BlendMode, DepthMode, GraphicsManager, MaterialDesc, MaterialHandle, ModelHandle,
+    TextureHandle, VertexAttr,
 };
 use engine::resources::{FontAtlas, Resources};
 use engine::scene::Behaviour;
@@ -36,6 +36,7 @@ pub fn register_hud_material(resources: &mut Resources, gm: &mut GraphicsManager
             instance_attrs: &[VertexAttr::Mat4, VertexAttr::F32x2, VertexAttr::F32x2],
             bindings: &[Binding::CameraUbo(1), Binding::Sampler2d],
             depth: DepthMode::Disabled,
+            blend: BlendMode::Opaque,
         },
     )
 }
