@@ -42,10 +42,6 @@ const SPIN_Y: f32 = TAU * 0.22;
 /// horizontal runs ±aspect.
 const HUD_HALF_HEIGHT: f32 = 1.0;
 
-/// Bundled font for the HUD label. Kept in test-3d/assets so the crate is
-/// self-contained — Pong has its own copy.
-const HUD_FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
-
 /// Atlas raster size. 48 px is the same setting Pong's text.rs uses; matched
 /// here so visuals are consistent at the resolutions a desktop user runs at.
 const HUD_FONT_PX: f32 = 48.0;
@@ -97,9 +93,8 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     let cube_mesh = resources.load_mesh(gm, &cube_mesh());
     #[cfg(feature = "obj")]
     let cube_mesh = {
-        let bytes = include_bytes!("../assets/cube.obj");
         resources
-            .load_obj(gm, bytes)
+            .load_obj(gm, engine::asset!("assets/cube.obj"))
             .into_iter()
             .next()
             .expect("cube.obj produced no meshes")
@@ -132,7 +127,7 @@ pub fn build_scene(resources: &mut Resources, gm: &mut GraphicsManager) -> Scene
     // its own — `HudLabelBehaviour` owns the per-glyph instances and
     // contributes them via `collect_renderables`.
     let hud_material = crate::hud::register_hud_material(resources, gm);
-    let atlas = resources.load_font(gm, HUD_FONT_BYTES, HUD_FONT_PX);
+    let atlas = resources.load_font(gm, engine::asset!("assets/DejaVuSans.ttf"), HUD_FONT_PX);
     scene.spawn(
         Object::new()
             .with_position(HUD_TEXT_POSITION)

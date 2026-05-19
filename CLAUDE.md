@@ -24,6 +24,10 @@ User settings persist as JSON at `dirs::config_dir()/pong-rust/settings.json`. S
 
 The engine is 2D + 3D capable. **Pong is intentionally 2D** — follow the Y-down convention there, prefer `Renderable::Solid` / `Renderable::Textured` or pong-side custom materials like `text_tint`, and don't pull in 3D paths (`Camera3D`, depth-aware materials, lit shaders) without a concrete in-game reason. Engine-side work can target either path.
 
+## Asset references
+
+Non-shader asset call sites in pong + test-3d go through the `engine::asset!("relative/path/from/crate/root")` macro. In release it expands to `AssetSource::from_bytes(include_bytes!(...))` (assets baked into the binary, zero runtime cost). With `--features hot-reload` it expands to `AssetSource::from_file(...)` which reads at runtime and registers the path with the asset watcher. Loaders that take `AssetSource`: `load_texture_png`, `load_sound`, `load_font`, `load_obj`, `load_gltf`. **Don't reintroduce `include_bytes!` directly at call sites** — use the macro so the dev/release switch keeps working. The `concat!(env!("CARGO_MANIFEST_DIR"), "/", $path)` inside the macro is resolved at the call site, so `CARGO_MANIFEST_DIR` correctly anchors at the game crate even though the macro lives in `engine`.
+
 ## Workspace particulars
 
 - Engine and test-3d are **edition 2021**; pong is still **edition 2018**. Don't assume workspace-wide edition.
@@ -51,6 +55,7 @@ Non-obvious if your last `ash` was 0.29-ish or earlier.
 - **`FontAtlas` lives on `PhaseController`** in pong's game scene — the longest-lived behaviour — so its `Texture` outlives every glyph instance registered against it. If you move it, glyph instances may outlive the atlas and the unregister path will run against a freed handle.
 - **The "always emit, park hidden ones at `hidden_transform()`" rule for multi-instance behaviours.** `register_instance` initialises `last_model` to identity (= world origin), not off-screen — silently skipping hidden segments/glyphs from `collect_renderables` would leave them parked at the origin until the next emit.
 - **`Object::renderable` is registered by the engine on `Scene::apply_commands`, not by the caller.** Game code only supplies the `Renderable` variant + handles. This is what makes `Scene::despawn(id)` work without the caller remembering the handle.
+- **`reload_texture` keeps the `TextureHandle` slot stable but rebuilds image+memory+view and re-binds every material's sampler descriptor sets that referenced the old view.** Any future code path that caches `vk::ImageView` outside `TextureResources` would silently keep the old view after a hot-reload — re-derive from `self.textures[&handle].view` each draw, never stash.
 
 ## Timing invariants
 
@@ -71,5 +76,4 @@ These won't be obvious from the code:
 ## Future improvements
 
 - **Game modes** (single-player vs CPU, best-of-N matches, etc.) — the only deliberate gap in pong's current feature set.
-- **Filesystem-based asset paths + hot-reload for non-shader assets.** Everything is `include_bytes!`'d today.
 - **"press ESC to return" on Settings is at a fixed world position; can clip on very narrow aspect ratios.** Fix: per-frame "track the bottom-right corner" behaviour using `Camera2D` + `GraphicsManager::extent`.

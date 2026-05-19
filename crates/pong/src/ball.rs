@@ -11,8 +11,6 @@ use engine::scene::{Behaviour, ObjectId, Renderable, UpdateCtx};
 use crate::paddle::PaddleBehaviour;
 use crate::wall::WallBehaviour;
 
-const BALL_TEXTURE_PNG: &[u8] = include_bytes!("../assets/tennis-ball.png");
-
 pub struct BallBehaviour {
     pub velocity: Vec2,
     pub side_length: f32,
@@ -42,7 +40,7 @@ impl BallBehaviour {
         wall_bounce_sfx: Sound,
         paddle_bounce_sfx: Sound,
     ) -> (Self, Renderable) {
-        let texture = resources.load_texture_png(gm, BALL_TEXTURE_PNG);
+        let texture = resources.load_texture_png(gm, engine::asset!("assets/tennis-ball.png"));
         let renderable = Renderable::Textured {
             texture: texture.handle(),
             uv_offset: [0.0, 0.0],

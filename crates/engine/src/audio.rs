@@ -19,30 +19,69 @@
 //! initialisation fails (e.g. headless CI, no audio device); `play` is a no-op
 //! in that case. Construction errors are logged once at startup.
 
+use std::cell::RefCell;
 use std::io::Cursor;
+use std::rc::Rc;
 
 use kira::sound::static_sound::StaticSoundData;
 use kira::sound::FromFileError;
 use kira::{AudioManager as KiraAudioManager, AudioManagerSettings, DefaultBackend};
 
-/// Decoded audio asset. Cheap to clone (internally `Arc`-shared by `kira`).
+/// Decoded audio asset. Cheap to clone — clones share an inner [`Rc`] so a
+/// hot-reload of the source file (when the engine's `hot-reload` feature is
+/// enabled) swaps the decoded data inside, and every outstanding clone picks
+/// up the new sample on its next `play`.
 #[derive(Clone)]
 pub struct Sound {
-    data: StaticSoundData,
+    inner: Rc<RefCell<StaticSoundData>>,
 }
 
 impl Sound {
     pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, FromFileError> {
-        // Copy bytes to an owned Vec so the Cursor is `'static + Send + Sync` —
-        // `StaticSoundData::from_cursor` requires that bound.
-        let owned: Vec<u8> = bytes.to_vec();
-        let data = StaticSoundData::from_cursor(Cursor::new(owned))?;
-        Ok(Self { data })
+        let data = decode(bytes)?;
+        Ok(Self {
+            inner: Rc::new(RefCell::new(data)),
+        })
     }
 
     pub(crate) fn data(&self) -> StaticSoundData {
-        self.data.clone()
+        // kira's StaticSoundData is internally Arc-shared; `clone` is cheap
+        // and does not duplicate the decoded samples.
+        self.inner.borrow().clone()
     }
+
+    /// Re-decode `bytes` and replace this `Sound`'s inner data in place. All
+    /// outstanding clones of this `Sound` see the new sample on their next
+    /// `play` call. Used by the asset watcher; no-op for game code.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn replace_from_bytes(&self, bytes: &[u8]) -> Result<(), FromFileError> {
+        let new_data = decode(bytes)?;
+        *self.inner.borrow_mut() = new_data;
+        Ok(())
+    }
+
+    /// Pointer-identity for hot-reload bookkeeping. Two `Sound`s share the
+    /// same inner iff their `id()` matches.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn id(&self) -> *const RefCell<StaticSoundData> {
+        Rc::as_ptr(&self.inner)
+    }
+
+    /// Strong refcount of the inner cell. The watcher uses this to drop
+    /// stale entries whose only remaining ref is the one it itself holds —
+    /// i.e. game code dropped the sound. `> 1` means at least one game-side
+    /// clone is still around.
+    #[cfg(feature = "hot-reload")]
+    pub(crate) fn strong_count(&self) -> usize {
+        Rc::strong_count(&self.inner)
+    }
+}
+
+fn decode(bytes: &[u8]) -> Result<StaticSoundData, FromFileError> {
+    // Copy bytes to an owned Vec so the Cursor is `'static + Send + Sync` —
+    // `StaticSoundData::from_cursor` requires that bound.
+    let owned: Vec<u8> = bytes.to_vec();
+    StaticSoundData::from_cursor(Cursor::new(owned))
 }
 
 /// Engine-side audio output. Owned by `App` and threaded through `UpdateCtx`.

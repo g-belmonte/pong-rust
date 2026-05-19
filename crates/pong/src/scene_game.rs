@@ -57,7 +57,6 @@ const GOAL_LINE_X: f32 = 4.7;
 // in the same on-screen spot.
 const CAMERA_HALF_HEIGHT: f32 = 4.142;
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const FONT_RASTER_PX: f32 = 48.0;
 // 48 px / 0.005 = 9600 px per world unit — sized so "Welcome" sits inside
 // the play field. Kept in sync with FONT_RASTER_PX.
@@ -67,12 +66,8 @@ const FONT_WORLD_SCALE: f32 = 0.005;
 const GAME_OVER_TITLE_SCALE: f32 = 1.8;
 
 // All four events currently share the same source file. When distinct samples
-// land, give each its own `include_bytes!` line and the rest of the wiring
+// land, give each its own `engine::asset!` line and the rest of the wiring
 // stays the same.
-const WALL_BOUNCE_AUDIO: &[u8] = include_bytes!("../assets/hit.mp3");
-const PADDLE_BOUNCE_AUDIO: &[u8] = include_bytes!("../assets/hit.mp3");
-const SCORE_AUDIO: &[u8] = include_bytes!("../assets/score.mp3");
-const GAME_OVER_AUDIO: &[u8] = include_bytes!("../assets/victory.mp3");
 
 mod color {
     pub const RED: [f32; 3] = [1.0, 0.0, 0.0];
@@ -103,14 +98,15 @@ pub fn build_game(
     let paddle_mesh = resources.load_mesh(gm, &rect_mesh(PADDLE_WIDTH, PADDLE_HEIGHT));
     let wall_mesh = resources.load_mesh(gm, &rect_mesh(WALL_WIDTH, WALL_HEIGHT));
     let digit_meshes = DigitMeshes::load(resources, gm, DIGIT_SEGMENT_SIZE);
-    let font_atlas = resources.load_font(gm, FONT_BYTES, FONT_RASTER_PX);
+    let font_atlas = resources.load_font(gm, engine::asset!("assets/DejaVuSans.ttf"), FONT_RASTER_PX);
 
-    // Sound assets: cheap to clone (kira's StaticSoundData is Arc-backed).
-    // Ball owns the bounce clones; PhaseController owns the score/end clones.
-    let wall_bounce_sfx = resources.load_sound(WALL_BOUNCE_AUDIO);
-    let paddle_bounce_sfx = resources.load_sound(PADDLE_BOUNCE_AUDIO);
-    let score_sfx = resources.load_sound(SCORE_AUDIO);
-    let game_over_sfx = resources.load_sound(GAME_OVER_AUDIO);
+    // Sound assets: cheap to clone (kira's StaticSoundData is Arc-backed
+    // inside the engine's Sound wrapper). Ball owns the bounce clones;
+    // PhaseController owns the score/end clones.
+    let wall_bounce_sfx = resources.load_sound(engine::asset!("assets/hit.mp3"));
+    let paddle_bounce_sfx = resources.load_sound(engine::asset!("assets/hit.mp3"));
+    let score_sfx = resources.load_sound(engine::asset!("assets/score.mp3"));
+    let game_over_sfx = resources.load_sound(engine::asset!("assets/victory.mp3"));
 
     // Walls first so paddles/ball can capture their IDs.
     let top_wall = scene.spawn(

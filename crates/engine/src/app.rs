@@ -281,6 +281,12 @@ fn redraw(engine: &mut Engine, exit_requested: &mut bool) {
     // set.
     engine.input.end_frame();
 
+    // Apply any file-watcher-driven asset reloads (textures, meshes, sounds)
+    // before we flush pending destroys and draw. Compiles to a no-op without
+    // the `hot-reload` feature.
+    engine
+        .resources
+        .process_hot_reloads(&mut engine.graphics_manager);
     // Resource RAII flush must happen between frames — see resources.rs for
     // why we don't do it in Drop. Also reclaims assets dropped during the
     // scene swap above.

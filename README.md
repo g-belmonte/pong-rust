@@ -80,25 +80,40 @@ The test-3d crate also has `obj` / `gltf` feature proxies that turn on the match
 
 Same as debug, but with a `--release` flag added to the listed commands.
 
-### Shader hot-reload (dev iteration)
+### Hot-reload (dev iteration)
 
-Run with the `hot-reload` Cargo feature to have the engine watch
-`crates/engine/shaders/spv/` and rebuild the affected built-in material's
-pipeline whenever SPV bytes change on disk:
+The `hot-reload` Cargo feature covers **both** shaders and game-side
+assets. Off by default; release builds get zero overhead (assets are baked
+into the binary via `include_bytes!`, the watcher type is `#[cfg]`-gated out).
 
 ```sh
 cargo run -p pong --features hot-reload
+cargo run -p test-3d --features hot-reload,obj   # exercises OBJ mesh reload
 ```
 
+**Shaders.** The engine watches `crates/engine/shaders/spv/` and rebuilds
+the affected built-in material's pipeline whenever SPV bytes change on disk.
 Workflow: edit a GLSL file under `crates/engine/shaders/src/`, run
 `scripts/compile-shaders.sh crates/engine/shaders/src crates/engine/shaders/spv`
-(or hook it into your editor's on-save), and the running binary picks up the
-new shader without restart. Bad SPV bytes (e.g. a compile error producing a
-broken file) are logged to stderr and the old pipeline keeps running.
+(or hook it into your editor's on-save). Bad SPV bytes (e.g. a compile error
+producing a broken file) are logged to stderr and the old pipeline keeps
+running.
 
-The feature is off by default; release builds get zero overhead.
+**Non-shader assets.** The engine also watches each game crate's `assets/`
+directory and, on file change, applies the right kind of in-place update:
+
+| Asset kind          | Reload behaviour                                                              |
+|---------------------|-------------------------------------------------------------------------------|
+| **PNG texture**     | Re-decode + in-place GPU update; descriptor sets re-bound to the new image.   |
+| **OBJ / glTF mesh** | Re-parse + in-place GPU update on every affected `MeshHandle`.                |
+| **MP3 / sound**     | Re-decode + swap inside the `Sound` cell; every clone picks it up on `play`.  |
+| **TTF font**        | Log-only (`restart to apply`). Re-baking can shift glyph metrics and break already-laid-out text. |
+
+Asset references in game code go through the `engine::asset!("relative/path")`
+macro: in release it expands to `include_bytes!`, in dev it reads from disk
+and registers the source path with the watcher. The same call site works
+in both modes.
 
 # Open items
 
 - Game modes (single player vs CPU, best-of-N matches, etc.).
-- Optional: filesystem-based asset paths + hot-reload for non-shader assets.

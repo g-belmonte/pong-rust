@@ -33,7 +33,6 @@ use crate::settings::Settings;
 use crate::text::TextLabelBehaviour;
 use crate::tinted_text::TintedTextLabelBehaviour;
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const FONT_RASTER_PX: f32 = 48.0;
 const FONT_WORLD_SCALE: f32 = 0.005;
 
@@ -68,7 +67,7 @@ pub fn build_settings(
     let mut scene = Scene::new();
     scene.set_camera(0, Box::new(Camera2D::new(Vec2::ZERO, CAMERA_HALF_HEIGHT)));
 
-    let atlas = resources.load_font(gm, FONT_BYTES, FONT_RASTER_PX);
+    let atlas = resources.load_font(gm, engine::asset!("assets/DejaVuSans.ttf"), FONT_RASTER_PX);
     let tinted_material = register_tinted_text_material(resources, gm);
 
     // Title

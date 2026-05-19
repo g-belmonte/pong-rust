@@ -64,7 +64,7 @@ The renderer is built around a generic **material registry** — there is no har
 
 The render pass always carries a `D32_SFLOAT` depth attachment; each material's `DepthMode { Disabled | ReadOnly | ReadWrite }` picks how its pipeline interacts with depth. Mixing modes in one scene is the supported path for "3D world with 2D HUD on top". The built-in materials run `Disabled` so Pong's pre-3D paint-order layering still works.
 
-Optional `hot-reload` Cargo feature watches `crates/engine/shaders/spv/` and rebuilds the affected built-in material's pipeline on disk change, with `catch_unwind` + SPV rollback so a malformed shader keeps the old pipeline running. Release builds have zero overhead.
+Optional `hot-reload` Cargo feature watches `crates/engine/shaders/spv/` and rebuilds the affected built-in material's pipeline on disk change, with `catch_unwind` + SPV rollback so a malformed shader keeps the old pipeline running. The same feature also enables non-shader asset hot-reload through `engine::resources::asset_watcher` (see the *Resources* section). Release builds have zero overhead.
 
 ### `engine::resources`
 
@@ -78,6 +78,22 @@ Single API game code calls for asset loading. Loaders take `&mut GraphicsManager
 GPU resource destruction goes through an `Rc<RefCell<PendingDestroys>>` queue: `Drop` on the wrapper pushes an id, `Resources::flush_pending(&mut gm)` drains the queue once per frame at a known-safe boundary (where `device_wait_idle` + `unregister_*` is correct).
 
 OBJ + glTF mesh loaders gated behind separate Cargo features (`obj` via `tobj`; `gltf` via `gltf` — `.glb` + embedded data URIs only). Each provides a low-level `*_data` variant returning typed `Vec<MeshData>` and a high-level `load_*` variant that packs into the lit vertex layout (`pos+normal+uv`, stride 32) and returns `Vec<Mesh>`.
+
+#### Asset paths + hot-reload
+
+Asset references in game code go through the `engine::asset!("relative/path")` macro:
+
+- **Release** — expands to `AssetSource::from_bytes(include_bytes!(...))`. Assets are baked into the binary; no runtime filesystem dependency; the watcher type is `#[cfg]`-gated out.
+- **Dev (`hot-reload` feature on)** — expands to `AssetSource::from_file(...)` which reads the file at runtime and records the absolute path on the returned `AssetSource`. Loaders that take `AssetSource` (`load_texture_png`, `load_sound`, `load_font`, `load_obj`, `load_gltf`) register the path with `engine::resources::asset_watcher::AssetWatcher`.
+
+The watcher watches each parent directory non-recursively, debounces events at 150 ms, and on a real change re-reads the file and applies the kind-specific reload:
+
+- **PNG texture** → `GraphicsManager::reload_texture(handle, bytes)`: re-decode, in-place rebuild of the GPU image + memory + view backing the same `TextureHandle` slot, descriptor sets for every material sampling the old view are freed and re-allocated against the new one. Image dimensions may change.
+- **OBJ / glTF mesh** → re-parse, re-pack into the lit vertex layout, `GraphicsManager::reload_mesh(handle, &ModelMesh)` per sub-mesh. If the sub-mesh count differs from the original load, the mismatch is logged and only the overlapping prefix is updated (restart for the rest).
+- **MP3 / sound** → re-decode and swap the data inside every still-alive `Sound` clone's `Rc<RefCell<StaticSoundData>>`. Every behaviour holding a clone picks up the new sample on its next `audio.play(&sound)` call.
+- **TTF font** → log-only. Re-baking the atlas can shift glyph metrics, which would leave previously-laid-out text labels positioned against stale `GlyphInfo` and stale UVs. Restart is the prescribed path.
+
+The watcher entries hold `Weak`s, so a path's reload work short-circuits the moment no game code holds a clone of the asset; the entry GCs out on the next `flush_pending`. Failure modes (notify backend error, IO error, PNG decode error, Vulkan upload failure) all log and leave the previously-loaded asset in place — the dev loop keeps running.
 
 ### `engine::scene`
 

@@ -845,6 +845,165 @@ impl GraphicsManager {
         handle
     }
 
+    /// Re-upload `png_bytes` into the GPU image backing `handle`, keeping the
+    /// handle slot stable so every outstanding instance and every descriptor
+    /// set bound against it continues to work. Used by the asset watcher; not
+    /// part of the public game-side API today, but `pub` so the watcher (a
+    /// crate-internal module) can call it across the `resources` boundary.
+    ///
+    /// Image dimensions are allowed to change between reloads — the old
+    /// image+memory+view are destroyed and re-created; descriptor sets that
+    /// referenced the old view are re-bound to the new one.
+    ///
+    /// Returns `Err(String)` on PNG decode error or unknown handle so the
+    /// watcher can log and keep the old texture rather than panicking.
+    #[cfg(feature = "hot-reload")]
+    pub fn reload_texture(
+        &mut self,
+        handle: TextureHandle,
+        png_bytes: &[u8],
+    ) -> Result<(), String> {
+        if !self.textures.contains_key(&handle) {
+            return Err(format!("reload_texture: unknown TextureHandle {handle:?}"));
+        }
+        // Decode first so a malformed PNG fails *before* we destroy the
+        // existing image. Re-implements the relevant bits of
+        // `share::load_texture_image` so the early-return on decode error
+        // doesn't leak a half-created GPU image.
+        let decoded = match image::load_from_memory(png_bytes) {
+            Ok(d) => d.to_rgba8(),
+            Err(e) => return Err(format!("PNG decode failed: {e}")),
+        };
+        let (width, height) = (decoded.width(), decoded.height());
+        let pixels = decoded.into_raw();
+
+        unsafe {
+            self.device
+                .device_wait_idle()
+                .expect("device_wait_idle failed in reload_texture");
+        }
+
+        // Drop descriptor sets pointing at this texture. They'll be re-bound
+        // against the new view below.
+        let mut materials_to_rebind: Vec<MaterialHandle> = Vec::new();
+        for (&mh, mat) in self.materials.iter_mut() {
+            if let Some(sets) = mat.texture_descriptor_sets.remove(&handle) {
+                if !sets.is_empty() {
+                    unsafe {
+                        let _ = self
+                            .device
+                            .free_descriptor_sets(self.descriptor_pool, &sets);
+                    }
+                }
+                materials_to_rebind.push(mh);
+            }
+        }
+
+        // Tear down old image resources, leaving the registry entry in place
+        // (we overwrite it below).
+        let old = self
+            .textures
+            .remove(&handle)
+            .expect("reload_texture: texture vanished mid-operation");
+        destroy_texture_resources(&self.device, &old);
+
+        let (image, memory) = share::upload_rgba_image(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            width,
+            height,
+            &pixels,
+        );
+        let view = share::create_image_view(
+            &self.device,
+            image,
+            vk::Format::R8G8B8A8_SRGB,
+            vk::ImageAspectFlags::COLOR,
+            1,
+        );
+        let sampler = share::create_texture_sampler(&self.device);
+        self.textures.insert(
+            handle,
+            TextureResources { image, memory, view, sampler },
+        );
+
+        // Re-bind descriptor sets for every material that was previously
+        // sampling this texture. Without this, the next draw against any of
+        // those materials would have no descriptor set entry for this handle.
+        let new_tex = &self.textures[&handle];
+        for mh in materials_to_rebind {
+            let mat = self
+                .materials
+                .get_mut(&mh)
+                .expect("reload_texture: material vanished mid-operation");
+            let camera_buffers = self
+                .camera_uniform_buffers
+                .get(&mat.camera_slot)
+                .expect("reload_texture: camera slot missing");
+            let sets = allocate_textured_descriptor_sets(
+                &self.device,
+                self.descriptor_pool,
+                mat.descriptor_set_layout,
+                camera_buffers,
+                new_tex.view,
+                new_tex.sampler,
+            );
+            mat.texture_descriptor_sets.insert(handle, sets);
+        }
+        Ok(())
+    }
+
+    /// Re-upload `mesh`'s vertex + index data into the GPU buffers backing
+    /// `handle`, keeping the handle stable. Companion to `reload_texture`;
+    /// see that method's docs for the watcher use case.
+    #[cfg(feature = "hot-reload")]
+    pub fn reload_mesh(
+        &mut self,
+        handle: MeshHandle,
+        mesh: &ModelMesh,
+    ) -> Result<(), String> {
+        if !self.meshes.contains_key(&handle) {
+            return Err(format!("reload_mesh: unknown MeshHandle {handle:?}"));
+        }
+        unsafe {
+            self.device
+                .device_wait_idle()
+                .expect("device_wait_idle failed in reload_mesh");
+        }
+        let old = self
+            .meshes
+            .remove(&handle)
+            .expect("reload_mesh: mesh vanished mid-operation");
+        destroy_mesh(&self.device, &old);
+        let (vertex_buffer, vertex_memory) = share::create_vertex_buffer(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            &mesh.vertex_bytes,
+        );
+        let (index_buffer, index_memory) = share::create_index_buffer(
+            &self.device,
+            &self.physical_device_memory_properties,
+            self.command_pool,
+            self.graphics_queue,
+            &mesh.indices,
+        );
+        self.meshes.insert(
+            handle,
+            MeshBuffers {
+                vertex_buffer,
+                vertex_memory,
+                index_buffer,
+                index_memory,
+                index_count: mesh.indices.len() as u32,
+            },
+        );
+        Ok(())
+    }
+
     pub(crate) fn unregister_texture(&mut self, handle: TextureHandle) {
         if let Some(tex) = self.textures.remove(&handle) {
             unsafe {

@@ -5,9 +5,11 @@ edition = "2018"
 
 [features]
 default = []
-# Proxy feature: turning this on enables shader hot-reload in the engine. Run
-# `cargo run -p pong --features hot-reload` during dev iteration on the
-# engine's built-in shaders.
+# Proxy feature: turning this on enables shader *and* asset hot-reload in
+# the engine. Run `cargo run -p pong --features hot-reload` during dev
+# iteration on shaders or non-shader assets (textures, sounds, fonts under
+# `crates/pong/assets/`). Off by default; release builds bake every asset
+# in via `engine::asset!` → `include_bytes!`.
 hot-reload = ["engine/hot-reload"]
 
 [dependencies]

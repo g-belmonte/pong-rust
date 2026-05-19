@@ -8,6 +8,9 @@ default = []
 # Proxy features: turn on the matching engine loader.
 obj  = ["engine/obj"]
 gltf = ["engine/gltf"]
+# Shader + asset hot-reload during dev iteration. Mostly useful here with
+# `--features obj,hot-reload` to test cube.obj edits.
+hot-reload = ["engine/hot-reload"]
 
 [dependencies]
 engine = { path = "../engine" }

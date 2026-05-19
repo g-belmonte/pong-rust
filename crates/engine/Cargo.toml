@@ -5,8 +5,13 @@ edition = "2021"
 
 [features]
 default = []
-# Watch `crates/engine/shaders/spv/` and rebuild built-in material pipelines
-# when the SPV bytes change on disk. Dev iteration only; off in release.
+# Watch shader SPV directories *and* game-side asset directories on disk;
+# rebuild built-in material pipelines and swap the GPU bytes / decoded data
+# for textures, meshes (OBJ/glTF), and sounds in place when source files
+# change. Fonts log "restart required" because re-baking can shift glyph
+# metrics out from under already-laid-out text. Dev iteration only; off in
+# release builds (the `asset!` macro then expands to `include_bytes!` and the
+# binary carries every asset baked in, with zero runtime watcher overhead).
 hot-reload = ["dep:notify"]
 # Wavefront OBJ mesh loader (Resources::load_obj / load_obj_data).
 obj = ["dep:tobj"]
