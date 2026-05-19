@@ -11,6 +11,16 @@ use engine::scene::{Behaviour, ObjectId, Renderable, UpdateCtx};
 use crate::paddle::PaddleBehaviour;
 use crate::wall::WallBehaviour;
 
+// Max outgoing angle off the horizontal on a side hit, when the ball strikes
+// the paddle's extreme edge. ~60°.
+const PADDLE_REFLECT_MAX_ANGLE_RAD: f32 = 1.047_197_6;
+// Multiplicative speed bump applied on every paddle contact.
+const SPEED_BOOST_PER_HIT: f32 = 1.05;
+// Hard cap on |velocity|. With the fixed step of ~8.3 ms and paddle width 0.2,
+// the no-substep invariant in `fixed_update` requires per-axis |v| < ~24.
+// 16 leaves headroom even for fully diagonal trajectories.
+const MAX_SPEED: f32 = 16.0;
+
 pub struct BallBehaviour {
     pub velocity: Vec2,
     pub side_length: f32,
@@ -170,26 +180,42 @@ impl Behaviour for BallBehaviour {
             }
             paddle_hit = true;
             if overlap_x < overlap_y {
-                if new_x < px {
+                let push_left = new_x < px;
+                if push_left {
                     new_x -= overlap_x;
-                    if self.velocity.x > 0.0 {
-                        self.velocity.x = -self.velocity.x;
-                    }
                 } else {
                     new_x += overlap_x;
-                    if self.velocity.x < 0.0 {
-                        self.velocity.x = -self.velocity.x;
-                    }
                 }
-            } else if new_y < py {
-                new_y -= overlap_y;
-                if self.velocity.y > 0.0 {
-                    self.velocity.y = -self.velocity.y;
+                let heading_in = if push_left {
+                    self.velocity.x > 0.0
+                } else {
+                    self.velocity.x < 0.0
+                };
+                if heading_in {
+                    // Position-based reflection: where the ball hits on the
+                    // paddle face decides the outgoing angle.
+                    let t = ((new_y - py) / hph).clamp(-1.0, 1.0);
+                    let angle = t * PADDLE_REFLECT_MAX_ANGLE_RAD;
+                    let speed = (self.velocity.length() * SPEED_BOOST_PER_HIT).min(MAX_SPEED);
+                    let dir_x = if push_left { -1.0 } else { 1.0 };
+                    self.velocity.x = dir_x * speed * angle.cos();
+                    self.velocity.y = speed * angle.sin();
                 }
             } else {
-                new_y += overlap_y;
-                if self.velocity.y < 0.0 {
+                // Top/bottom graze: simple reflect, same speed bump.
+                let heading_in = if new_y < py {
+                    new_y -= overlap_y;
+                    self.velocity.y > 0.0
+                } else {
+                    new_y += overlap_y;
+                    self.velocity.y < 0.0
+                };
+                if heading_in {
                     self.velocity.y = -self.velocity.y;
+                    let speed = (self.velocity.length() * SPEED_BOOST_PER_HIT).min(MAX_SPEED);
+                    if let Some(dir) = self.velocity.try_normalize() {
+                        self.velocity = dir * speed;
+                    }
                 }
             }
             break;

@@ -58,6 +58,7 @@ Non-obvious if your last `ash` was 0.29-ish or earlier.
 - **The "always emit, park hidden ones at `hidden_transform()`" rule for multi-instance behaviours.** `register_instance` initialises `last_model` to identity (= world origin), not off-screen — silently skipping hidden segments/glyphs from `collect_renderables` would leave them parked at the origin until the next emit.
 - **`Object::renderable` is registered by the engine on `Scene::apply_commands`, not by the caller.** Game code only supplies the `Renderable` variant + handles. This is what makes `Scene::despawn(id)` work without the caller remembering the handle.
 - **`reload_texture` keeps the `TextureHandle` slot stable but rebuilds image+memory+view and re-binds every material's sampler descriptor sets that referenced the old view.** Any future code path that caches `vk::ImageView` outside `TextureResources` would silently keep the old view after a hot-reload — re-derive from `self.textures[&handle].view` each draw, never stash.
+- **Ball `MAX_SPEED` in `crates/pong/src/ball.rs` is bound to the no-substep invariant.** It must satisfy `MAX_SPEED * fixed_dt < PADDLE_WIDTH` per axis (the assumption documented at `ball.rs` `fixed_update`). If you change `PADDLE_WIDTH` in `scene_game.rs` or the engine's 120 Hz fixed step, re-check the cap — otherwise a fast ball can tunnel through a paddle.
 
 ## Timing invariants
 

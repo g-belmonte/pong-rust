@@ -70,6 +70,11 @@ In-game: **W / S** drive the left paddle, **I / K** drive the right paddle,
 the main menu. Settings changes take effect at the *next* Play — a match in
 progress keeps its starting values.
 
+The ball's outgoing angle depends on where it strikes the paddle: a centre
+hit returns it nearly flat, edge hits send it back at a steep angle (up to
+~60° off the horizontal). Each paddle contact also nudges the ball's speed
+up by ~5% (capped), so long rallies escalate in pace.
+
 ## Compile and run the game
 
 ### Debug/Dev profile
