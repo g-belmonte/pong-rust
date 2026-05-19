@@ -13,7 +13,7 @@ use crate::wall::WallBehaviour;
 
 // Max outgoing angle off the horizontal on a side hit, when the ball strikes
 // the paddle's extreme edge. ~60°.
-const PADDLE_REFLECT_MAX_ANGLE_RAD: f32 = 1.047_197_6;
+const PADDLE_REFLECT_MAX_ANGLE_RAD: f32 = std::f32::consts::FRAC_PI_3;
 // Multiplicative speed bump applied on every paddle contact.
 const SPEED_BOOST_PER_HIT: f32 = 1.05;
 // Hard cap on |velocity|. With the fixed step of ~8.3 ms and paddle width 0.2,

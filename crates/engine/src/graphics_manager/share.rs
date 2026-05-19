@@ -423,7 +423,7 @@ pub fn choose_swapchain_format(
         }
     }
 
-    return *available_formats.first().unwrap();
+    *available_formats.first().unwrap()
 }
 
 pub fn choose_swapchain_present_mode(
@@ -442,7 +442,7 @@ pub fn choose_swapchain_extent(
     capabilities: &vk::SurfaceCapabilitiesKHR,
     window: &winit::window::Window,
 ) -> vk::Extent2D {
-    if capabilities.current_extent.width != u32::max_value() {
+    if capabilities.current_extent.width != u32::MAX {
         capabilities.current_extent
     } else {
         use num::clamp;
@@ -1164,9 +1164,6 @@ pub fn create_descriptor_pool(
 // One descriptor set per swapchain image, each binding the camera UBO for that
 // image plus the texture's image view + sampler.
 #[allow(dead_code)]
-
-
-
 pub fn create_uniform_buffers(
     device: &ash::Device,
     device_memory_properties: &vk::PhysicalDeviceMemoryProperties,

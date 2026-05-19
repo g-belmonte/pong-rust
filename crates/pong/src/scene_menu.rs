@@ -265,7 +265,7 @@ impl Behaviour for MenuController {
         let mouse = ctx.input.mouse_position();
         let mouse_moved = self
             .last_mouse
-            .map_or(true, |(lx, ly)| lx != mouse.0 || ly != mouse.1);
+            .is_none_or(|(lx, ly)| lx != mouse.0 || ly != mouse.1);
         self.last_mouse = Some(mouse);
         if mouse_moved {
             let world = self.screen_to_world(mouse.0, mouse.1, ctx.graphics.extent());

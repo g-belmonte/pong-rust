@@ -39,6 +39,7 @@ pub struct SwapChainSupportDetail {
     pub present_modes: Vec<vk::PresentModeKHR>,
 }
 
+#[derive(Default)]
 pub struct QueueFamilyIndices {
     pub graphics_family: Option<u32>,
     pub present_family: Option<u32>,
@@ -46,10 +47,7 @@ pub struct QueueFamilyIndices {
 
 impl QueueFamilyIndices {
     pub fn new() -> QueueFamilyIndices {
-        QueueFamilyIndices {
-            graphics_family: None,
-            present_family: None,
-        }
+        QueueFamilyIndices::default()
     }
 
     pub fn is_complete(&self) -> bool {

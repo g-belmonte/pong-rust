@@ -1095,14 +1095,14 @@ impl GraphicsManager {
 
         unsafe {
             self.device
-                .wait_for_fences(&wait_fences, true, std::u64::MAX)
+                .wait_for_fences(&wait_fences, true, u64::MAX)
                 .expect("Failed to wait for Fence!");
         }
 
         let (image_index, _is_sub_optimal) = unsafe {
             let result = self.swapchain_loader.acquire_next_image(
                 self.swapchain,
-                std::u64::MAX,
+                u64::MAX,
                 self.image_available_semaphores[self.current_frame],
                 vk::Fence::null(),
             );

@@ -121,7 +121,7 @@ pub fn build_settings(
 
     // Value labels (right column). Each rebuilds its text on adjustment.
     let mut value_ids: Vec<ObjectId> = Vec::new();
-    for i in 0..ROW_NAMES.len() {
+    for (i, &y) in ROW_Y.iter().enumerate() {
         let (color, scale) = if i == 0 {
             (COLOR_WHITE, ROW_SCALE_SELECTED)
         } else {
@@ -131,7 +131,7 @@ pub fn build_settings(
         let id = scene.spawn(
             Object::new()
                 .with_transform(Transform {
-                    position: Vec3::new(ROW_VALUE_X, ROW_Y[i], 0.0),
+                    position: Vec3::new(ROW_VALUE_X, y, 0.0),
                     scale: Vec3::splat(scale),
                     ..Transform::default()
                 })

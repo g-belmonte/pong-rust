@@ -13,10 +13,10 @@
 //! Per-frame flow on `WindowEvent::RedrawRequested`:
 //!   1. `Time::begin_frame` snapshots the variable delta and folds it into
 //!      the fixed-step accumulator.
-//!   2. While the accumulator has a step available:
-//!        a. `Scene::dispatch_fixed_update(time, input, …)` runs every
-//!           behaviour's `fixed_update`.
-//!        b. `Scene::apply_commands` flushes any spawn/despawn queued there.
+//!   2. While the accumulator has a step available,
+//!      `Scene::dispatch_fixed_update(time, input, …)` runs every behaviour's
+//!      `fixed_update`, then `Scene::apply_commands` flushes any spawn/despawn
+//!      queued there.
 //!   3. `Scene::dispatch_update(time, input, …)` runs every behaviour's
 //!      variable-step `update`.
 //!   4. `Scene::apply_commands` flushes the variable-update queue.

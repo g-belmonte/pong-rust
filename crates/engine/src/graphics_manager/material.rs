@@ -438,6 +438,7 @@ pub const MAX_INSTANCES_PER_MATERIAL: usize = 256;
 /// registration and by `recreate_swapchain` (viewport/scissor are baked into
 /// the pipeline, so it has to be rebuilt whenever the swapchain extent
 /// changes).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
