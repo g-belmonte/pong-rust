@@ -33,7 +33,16 @@ pong-rust/
         app.rs              # winit ApplicationHandler + per-frame loop
         audio.rs            # kira wrapper
         camera.rs           # Camera trait, Camera2D, Camera3D
-        graphics_manager.rs # renderer entry; submodules under graphics_manager/
+        graphics_manager.rs # renderer entry: struct + new + Drop + accessors + pipeline cache
+        graphics_manager/   # split by concern:
+                            #   registry.rs            — register/unregister mesh/texture/material/instance
+                            #   camera.rs              — per-slot camera UBO + set_camera
+                            #   draw.rs                — draw_frame + per-material batching
+                            #   swapchain_recreate.rs  — resize / OUT_OF_DATE handling
+                            #   material.rs            — pipeline + descriptor-set layout
+                            #   hot_reload.rs          — file-watcher + reload paths (feature-gated)
+                            #   vulkan/                — low-level helpers (instance, swapchain, buffers,
+                            #                            images, render pass, commands, descriptors, shader)
         input.rs            # polling Input
         resources/          # mesh/texture/sound/font/material loaders, RAII handles
         scene.rs            # Scene + Object + Behaviour trait + command queue
@@ -209,7 +218,7 @@ These are the choices that shaped the engine's surface and would be expensive to
 
 Worth being explicit about, to avoid scope creep:
 
-- Vulkan via `ash` with `share.rs` as tutorial-shaped scaffolding.
+- Vulkan via `ash` with the `graphics_manager/vulkan/` submodules as tutorial-shaped scaffolding.
 - The "mesh once + instances many" + "texture once + instances many" rendering model.
 - The unit-quad textured pipeline with alpha-discard fragment shader.
 - Handle-based public API with RAII wrappers.

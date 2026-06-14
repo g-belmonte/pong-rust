@@ -23,7 +23,7 @@ pub const IS_PAINT_FPS_COUNTER: bool = true;
 
 // Caps how many distinct textures a single sampler-using material may have
 // instances against at once. Bounds the descriptor-pool sizing in
-// `share::create_descriptor_pool` (per-(material, texture) descriptor sets).
+// `vulkan::create_descriptor_pool` (per-(material, texture) descriptor sets).
 pub const MAX_TEXTURED_MODELS: usize = 256;
 
 impl DeviceExtension {

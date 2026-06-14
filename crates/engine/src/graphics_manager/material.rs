@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::ptr;
 
-use crate::graphics_manager::share;
+use crate::graphics_manager::vulkan;
 use crate::graphics_manager::structures::UniformBufferObject;
 use crate::graphics_manager::TextureHandle;
 
@@ -452,8 +452,8 @@ pub(crate) fn create_pipeline(
     depth: DepthMode,
     blend: BlendMode,
 ) -> (vk::Pipeline, vk::PipelineLayout, u32, u32) {
-    let vert_shader_module = share::create_shader_module(device, vertex_spv.to_vec());
-    let frag_shader_module = share::create_shader_module(device, fragment_spv.to_vec());
+    let vert_shader_module = vulkan::create_shader_module(device, vertex_spv.to_vec());
+    let frag_shader_module = vulkan::create_shader_module(device, fragment_spv.to_vec());
 
     let main_function_name = CString::new("main").unwrap();
 
